@@ -31,7 +31,12 @@ struct ping_pkt {
 	char msg[PING_PKT_S];
 } __attribute__((packed));
 
-int ping_id;
+static uint16_t ping_id;
+
+__attribute__((constructor)) void set_ping_id() {
+	uint32_t pid = getpid();
+	ping_id = (pid >> 16) ^ (pid & 0xffff);
+}
 
 // Calculating the Check Sum
 uint16_t checksum (void *b, uint16_t len) {
@@ -88,7 +93,7 @@ void send_ping (
 	bzero(&icmp_ping_pkt, sizeof(icmp_ping_pkt));
 
 	icmp_ping_pkt.hdr.type = ICMP_ECHO;
-	icmp_ping_pkt.hdr.un.echo.id = getpid();
+	icmp_ping_pkt.hdr.un.echo.id = ping_id;
 
 	int i;
 	for (i = 0; i < (int)sizeof(icmp_ping_pkt.msg) - 1; i++)
@@ -168,7 +173,7 @@ void receive_pong (
 			exit(1);
 		}
 
-		if (pkt.icmp_ping_pkt.hdr.type != ICMP_ECHOREPLY || pkt.icmp_ping_pkt.hdr.un.echo.id != getpid()) {
+		if (pkt.icmp_ping_pkt.hdr.type != ICMP_ECHOREPLY || pkt.icmp_ping_pkt.hdr.un.echo.id != ping_id) {
 			fprintf(stdout, "Recieved ICMP packet, not pong\n");
 			continue;
 		}
