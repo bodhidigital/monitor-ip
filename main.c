@@ -33,13 +33,67 @@ struct ping_pkt {
 
 static uint16_t ping_id;
 
-__attribute__((constructor)) void set_ping_id() {
+__attribute__((constructor))
+static void set_ping_id () {
 	uint32_t pid = getpid();
 	ping_id = (pid >> 16) ^ (pid & 0xffff);
 }
 
+__attribute__((pure))
+static struct timespec timeval2spec (struct timeval t) {
+	return (struct timespec){
+		.tv_sec = t.tv_sec,
+		.tv_nsec = 1000 * t.tv_usec
+	};
+}
+
+__attribute__((pure))
+static struct timeval timespec2val (struct timespec t) {
+	return (struct timeval){
+		.tv_sec = t.tv_sec,
+		.tv_usec = t.tv_nsec / 1000
+	};
+}
+
+__attribute__((pure))
+static useconds_t timespec2useconds (struct timespec t) {
+	return (1000 * 1000) * t.tv_sec + t.tv_nsec / 1000;
+}
+
+__attribute__((pure))
+static double timespec2double (struct timespec t) {
+	return (double)t.tv_sec + (double)t.tv_nsec / (1000.0 * 1000.0 * 1000.0);
+}
+
+__attribute__((pure))
+static struct timespec diff_timespec (
+		struct timespec start, struct timespec end
+) {
+		struct timespec diff;
+		diff.tv_sec = end.tv_sec - start.tv_sec;
+		if (end.tv_nsec < start.tv_nsec) {
+			diff.tv_sec -= 1;
+			diff.tv_nsec = (1000 * 1000 * 1000) + end.tv_nsec - start.tv_nsec;
+		} else {
+			diff.tv_nsec = end.tv_nsec - start.tv_nsec;
+		}
+
+		return diff;
+}
+
+__attribute__((pure))
+static int cmp_timespec (struct timespec a, struct timespec b) {
+	if (a.tv_sec > b.tv_sec || (a.tv_sec == b.tv_sec && a.tv_nsec > b.tv_nsec)) {
+		return 1;
+	} else if (a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec) {
+		return 0;
+	} else {
+		return -1;
+	}
+}
+
 // Calculating the Check Sum
-uint16_t checksum (void *b, uint16_t len) {
+static uint16_t checksum (const void *b, uint16_t len) {
 	uint16_t *buf = (uint16_t *)b;
 
 	uint32_t sum;
@@ -56,8 +110,10 @@ uint16_t checksum (void *b, uint16_t len) {
 	return result;
 }
 
-void print_icmp_packet (struct sockaddr *addr, ssize_t length, struct ping_pkt pkt) {
-	void *addr_data;
+static void print_icmp_packet (
+		const struct sockaddr *addr, ssize_t length, struct icmphdr hdr
+) {
+	const void *addr_data;
 	size_t addr_str_s;
 	if (addr->sa_family == AF_INET) {
 		addr_str_s = 16;
@@ -68,23 +124,21 @@ void print_icmp_packet (struct sockaddr *addr, ssize_t length, struct ping_pkt p
 	}
 
 	char *addr_str;
-	addr_str = (char *)malloc(addr_str_s);
+	addr_str = (char *)alloca(addr_str_s);
 
 	inet_ntop(addr->sa_family, addr_data, addr_str, addr_str_s);
 
 	fprintf(stdout, "\tAddress: %s\n", addr_str);
 	fprintf(stdout, "\tLength: %zd\n", length);
-	fprintf(stdout, "\tType: %hhu\n", (unsigned char)pkt.hdr.type);
-	fprintf(stdout, "\tCode: %hhu\n", (unsigned char)pkt.hdr.code);
-	fprintf(stdout, "\tChecksum: %hu\n", (unsigned short)pkt.hdr.checksum);
-	fprintf(stdout, "\tID: %hu\n", (unsigned short)pkt.hdr.un.echo.id);
-	fprintf(stdout, "\tSequence Number: %hu\n", (unsigned short)pkt.hdr.un.echo.sequence);
-
-	free(addr_str);
+	fprintf(stdout, "\tType: %hhu\n", (unsigned char)hdr.type);
+	fprintf(stdout, "\tCode: %hhu\n", (unsigned char)hdr.code);
+	fprintf(stdout, "\tChecksum: %hu\n", (unsigned short)hdr.checksum);
+	fprintf(stdout, "\tID: %hu\n", (unsigned short)hdr.un.echo.id);
+	fprintf(stdout, "\tSequence Number: %hu\n", (unsigned short)hdr.un.echo.sequence);
 }
 
 // make a ping request
-void send_ping (
+static void send_ping (
 		int msg_count, int ping_sockfd, struct sockaddr *ping_addr, size_t ping_addr_s
 ) {
 	struct ping_pkt icmp_ping_pkt;
@@ -105,19 +159,19 @@ void send_ping (
 
 	//send packet
 	ssize_t bytes_sent = sendto(
-			ping_sockfd, &icmp_ping_pkt, sizeof(icmp_ping_pkt), 0, ping_addr, ping_addr_s);
+			ping_sockfd, &icmp_ping_pkt, sizeof(icmp_ping_pkt), 0, ping_addr,
+			ping_addr_s);
 	if (bytes_sent < 0) {
 		fprintf(stderr, "Error sending packet: %s\n", strerror(errno));
 		exit(1);
 	}
 
 	fprintf(stdout, "Sent packet:\n");
-	print_icmp_packet(ping_addr, sizeof(icmp_ping_pkt), icmp_ping_pkt);
+	print_icmp_packet(ping_addr, sizeof(icmp_ping_pkt), icmp_ping_pkt.hdr);
 }
 
-void receive_pong (
-		int ping_sockfd,
-		struct sockaddr *ping_addr
+static void receive_pong (
+		int ping_sockfd, struct sockaddr *ping_addr
 ) {
 	struct sockaddr *pong_addr;
 	socklen_t pong_addr_s;
@@ -138,11 +192,11 @@ void receive_pong (
 
 	bzero(pong_addr, pong_addr_s);
 
-	struct timeval timeout;
+	struct timespec timeout;
 	fd_set fds;
 
 	timeout.tv_sec = PING_SLEEP_US / (1000 * 1000);
-	timeout.tv_usec = PING_SLEEP_US % (1000 * 1000);
+	timeout.tv_nsec = 1000 * (PING_SLEEP_US % (1000 * 1000));
 
 	FD_ZERO(&fds);
 	FD_SET(ping_sockfd, &fds);
@@ -152,7 +206,8 @@ void receive_pong (
 
 	do {
 		fd_set read_fds = fds;
-		int select_avail = select(FD_SETSIZE, &read_fds, NULL, NULL, &timeout);
+		struct timeval timeout_val = timespec2val(timeout);
+		int select_avail = select(FD_SETSIZE, &read_fds, NULL, NULL, &timeout_val);
 		if (0 > select_avail) {
 			fprintf(stderr, "Error polling ICMP socket: %s\n", strerror(errno));
 			exit(1);
@@ -173,47 +228,34 @@ void receive_pong (
 			exit(1);
 		}
 
-		if (pkt.icmp_ping_pkt.hdr.type != ICMP_ECHOREPLY || pkt.icmp_ping_pkt.hdr.un.echo.id != ping_id) {
+		if (pkt.icmp_ping_pkt.hdr.type != ICMP_ECHOREPLY ||
+				pkt.icmp_ping_pkt.hdr.un.echo.id != ping_id) {
 			fprintf(stdout, "Recieved ICMP packet, not pong\n");
 			continue;
 		}
 
 		fprintf(stdout, "Recieved packet:\n");
-		print_icmp_packet(pong_addr, recv_bytes, pkt.icmp_ping_pkt);
+		print_icmp_packet(pong_addr, recv_bytes, pkt.icmp_ping_pkt.hdr);
 
 		struct timespec time_end;
 		clock_gettime(CLOCK_MONOTONIC, &time_end);
 
-		struct timeval time_elapsed;
-		time_elapsed.tv_sec = time_end.tv_sec - time_start.tv_sec;
-		if (time_end.tv_nsec < time_start.tv_nsec) {
-			time_elapsed.tv_sec -= 1;
-			time_elapsed.tv_usec = ((1000 * 1000 * 1000) + time_end.tv_nsec - time_start.tv_nsec) / 1000;
-		} else {
-			time_elapsed.tv_usec = (time_end.tv_nsec - time_start.tv_nsec) / 1000;
-		}
+		// time_end - time_start
+		struct timespec time_elapsed = diff_timespec(time_start, time_end);
 
-		if ((timeout.tv_sec < time_elapsed.tv_sec) ||
-			(timeout.tv_sec == time_elapsed.tv_sec &&
-			 timeout.tv_usec < time_elapsed.tv_usec)) {
+		// time_elapsed >= timeout
+		if (-1 < cmp_timespec(time_elapsed, timeout)) {
 			return;
 		}
 
-		timeout.tv_sec -= time_elapsed.tv_sec;
-		if (timeout.tv_usec < time_elapsed.tv_usec) {
-			timeout.tv_sec -= 1;
-			timeout.tv_usec += (1000 * 1000);
-		}
-		timeout.tv_usec -= time_elapsed.tv_usec;
+		// timeout - time_elapsed
+		timeout = diff_timespec(time_elapsed, timeout);
 
-		double timeout_secs = (double)timeout.tv_sec + (double)timeout.tv_usec / (1000.0 * 1000.0);
-		fprintf(stdout, "Continuing select loop, remaining time %.03fs\n", timeout_secs);
-
-		usleep(timeout.tv_usec + timeout.tv_sec * (1000 * 1000));
+		fprintf(stdout, "Continuing select loop, remaining time %.03fs\n", timespec2double(timeout));
 	} while (1);
 }
 
-void usage(const char *progname) {
+static void usage(const char *progname) {
 	fprintf(stderr, "Usage: %s [-4|-6] <address> [<hook command>]\n", progname);
 	fprintf(stderr, "\n");
 	fprintf(stderr, "Options:\n");
