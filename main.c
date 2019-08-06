@@ -5,9 +5,10 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <netinet/in.h>
-#include <netinet/ip_icmp.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
+#include <netinet/ip_icmp.h>
+#include <netinet/icmp6.h>
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -30,6 +31,35 @@ struct ping_pkt {
 	struct icmphdr hdr;
 	char msg[PING_PKT_S];
 } __attribute__((packed));
+
+struct ip_pkt {
+	unsigned int version:4;
+	int _pad:4;
+	char remaining[0];
+} __attribute__((packed));
+
+struct ip4_pkt {
+	struct iphdr hdr;
+	char options_and_data[0];
+} __attribute__((packed));
+
+//struct ip6_pkt {
+//	struct ip6_hdr hdr;
+//	char extensions_and_data[0];
+//} __attribute__((packed));
+
+//struct ip6_hopopts {
+//	struct ip6_hbh hdr;
+//	struct ip6_opt opts[0];
+//} __attribute__((packed));
+
+//struct icmp6_pseudo_header {
+//	uint8_t src[16];
+//	uint8_t dst[16];
+//	uint32_t len;
+//	uint32_t _zero_pad:24;
+//	uint8_t nxt;
+//} __attribute__((packed));
 
 static uint16_t ping_id;
 
@@ -115,12 +145,15 @@ static void print_icmp_packet (
 ) {
 	const void *addr_data;
 	size_t addr_str_s;
+	const char *icmp_version;
 	if (addr->sa_family == AF_INET) {
 		addr_str_s = 16;
 		addr_data = &((struct sockaddr_in *)addr)->sin_addr;
+		icmp_version = "ICMP";
 	} else {
 		addr_str_s = 40;
 		addr_data = &((struct sockaddr_in6 *)addr)->sin6_addr;
+		icmp_version = "ICMPv6";
 	}
 
 	char *addr_str;
@@ -130,15 +163,112 @@ static void print_icmp_packet (
 
 	fprintf(stdout, "\tAddress: %s\n", addr_str);
 	fprintf(stdout, "\tLength: %zd\n", length);
-	fprintf(stdout, "\tType: %hhu\n", (unsigned char)hdr.type);
-	fprintf(stdout, "\tCode: %hhu\n", (unsigned char)hdr.code);
-	fprintf(stdout, "\tChecksum: %hu\n", (unsigned short)hdr.checksum);
-	fprintf(stdout, "\tID: %hu\n", (unsigned short)hdr.un.echo.id);
-	fprintf(stdout, "\tSequence Number: %hu\n", (unsigned short)hdr.un.echo.sequence);
+	fprintf(stdout, "\t%s Type: %hhu\n", icmp_version, (unsigned char)hdr.type);
+	fprintf(stdout, "\t%s Code: %hhu\n", icmp_version, (unsigned char)hdr.code);
+	if (addr->sa_family == AF_INET) { // The kernel handles ICMPv6 checksuming.
+		fprintf(stdout, "\tChecksum: %hu\n", (unsigned short)ntohs(hdr.checksum));
+	}
+	fprintf(stdout, "\tID: %hu\n", (unsigned short)ntohs(hdr.un.echo.id));
+	fprintf(stdout, "\tSequence Number: %hu\n", (unsigned short)ntohs(hdr.un.echo.sequence));
 }
 
+static void *get_ip4_payload (
+		void *pkt, size_t len, uint8_t *protocol, size_t *payload_len
+) {
+	struct ip4_pkt *ip4_pkt = (struct ip4_pkt*)pkt;
+	void *data;
+
+	if (len < sizeof(struct iphdr)) {
+		return NULL;
+	}
+
+	size_t pkt_tot_len = ntohs(ip4_pkt->hdr.tot_len);
+	size_t pkt_hdr_len = 4 * ip4_pkt->hdr.ihl;
+	if (pkt_tot_len < pkt_hdr_len) {
+		return NULL;
+	}
+
+	size_t offset = pkt_hdr_len;
+
+	*protocol = ip4_pkt->hdr.protocol;
+	*payload_len = ((len >= pkt_tot_len) ? pkt_tot_len : len) - offset;
+	data = (char *)pkt + offset;
+
+	return data;
+}
+
+//static void *get_ip6_payload (
+//		void *pkt, size_t len, uint8_t *protocol, size_t *payload_len
+//) {
+//	struct ip6_pkt *ip6_pkt = (struct ip6_pkt*)pkt;
+//	void *data;
+//
+//	size_t offset = sizeof(struct ip6_hdr);
+//	if (len < offset) {
+//		return NULL;
+//	}
+//
+//	size_t pkt_tot_len = ntohs(ip6_pkt->hdr.ip6_plen);
+//	uint8_t nxt = ip6_pkt->hdr.ip6_nxt;
+//	if (nxt == IPPROTO_HOPOPTS ||
+//			nxt == IPPROTO_ROUTING ||
+//			nxt == IPPROTO_FRAGMENT ||
+//			nxt == IPPROTO_DSTOPTS ||
+//			nxt == IPPROTO_MH) {
+//		if (len < offset + sizeof(struct ip6_ext)) {
+//			return NULL;
+//		}
+//
+//		struct ip6_ext *ip6_ext = (struct ip6_ext *)((char *)ip6_pkt + 40);
+//		if (nxt == IPPROTO_HOPOPTS) {
+//			if (len < offset + ip6_ext->ip6e_len + 8) {
+//				return NULL;
+//			}
+//
+//			struct ip6_hopopts *ip6_hopopts = (struct ip6_hopopts *)ip6_ext;
+//			struct ip6_opt *ip6_opt;
+//			for (size_t i = 0;
+//					ip6_hopopts->hdr.ip6h_len + 8 > i + sizeof(struct ip6_opt);
+//					i += sizeof(struct ip6_opt) + ip6_opt->ip6o_len) {
+//				ip6_opt = (struct ip6_opt *)((char *)&ip6_hopopts->opts[0] + i);
+//				if (ip6_opt->ip6o_type == IP6OPT_JUMBO) {
+//					if (ip6_opt->ip6o_len + 8 < sizeof(struct ip6_opt_jumbo)) {
+//						return NULL;
+//					}
+//
+//					struct ip6_opt_jumbo *ip6_opt_jumbo = (struct ip6_opt_jumbo *)ip6_opt;
+//					pkt_tot_len = ntohl(*(uint32_t *)&ip6_opt_jumbo->ip6oj_jumbo_len);
+//				}
+//			}
+//
+//			offset += ip6_ext->ip6e_len + 8;
+//			ip6_ext = (struct ip6_ext *)((char *)ip6_ext + ip6_ext->ip6e_len + 8);
+//		}
+//
+//		nxt = ip6_ext->ip6e_nxt;
+//		while (nxt == IPPROTO_ROUTING ||
+//				nxt == IPPROTO_FRAGMENT ||
+//				nxt == IPPROTO_DSTOPTS ||
+//				nxt == IPPROTO_MH) {
+//			if (len < offset + ip6_ext->ip6e_len + 8) {
+//				return NULL;
+//			}
+//
+//			offset += ip6_ext->ip6e_len + 8;
+//			ip6_ext = (struct ip6_ext *)((char *)ip6_ext + ip6_ext->ip6e_len + 8);
+//			nxt = ip6_ext->ip6e_nxt;
+//		}
+//	}
+//
+//	*protocol = nxt;
+//	*payload_len = (len >= pkt_tot_len) ? pkt_tot_len - offset : len;
+//	data = (char *)pkt + offset;
+//
+//	return data;
+//}
+
 // make a ping request
-static void send_ping (
+static void send_ping_v4 (
 		int msg_count, int ping_sockfd, struct sockaddr *ping_addr, size_t ping_addr_s
 ) {
 	struct ping_pkt icmp_ping_pkt;
@@ -147,14 +277,14 @@ static void send_ping (
 	bzero(&icmp_ping_pkt, sizeof(icmp_ping_pkt));
 
 	icmp_ping_pkt.hdr.type = ICMP_ECHO;
-	icmp_ping_pkt.hdr.un.echo.id = ping_id;
+	icmp_ping_pkt.hdr.un.echo.id = htons(ping_id);
 
 	int i;
 	for (i = 0; i < (int)sizeof(icmp_ping_pkt.msg) - 1; i++)
 		icmp_ping_pkt.msg[i] = '\0';
 
 	icmp_ping_pkt.msg[i] = 0;
-	icmp_ping_pkt.hdr.un.echo.sequence = msg_count;
+	icmp_ping_pkt.hdr.un.echo.sequence = htons(msg_count);
 	icmp_ping_pkt.hdr.checksum = checksum(&icmp_ping_pkt, sizeof(icmp_ping_pkt));
 
 	//send packet
@@ -170,15 +300,55 @@ static void send_ping (
 	print_icmp_packet(ping_addr, sizeof(icmp_ping_pkt), icmp_ping_pkt.hdr);
 }
 
+static void send_ping_v6 (
+		int msg_count, int ping_sockfd, struct sockaddr *ping_addr, size_t ping_addr_s
+) {
+	size_t icmp6_pkt_s = sizeof(struct icmp6_hdr) + PING_MSG_S;
+	void *icmp6_pkt = alloca(icmp6_pkt_s);
+	struct icmp6_hdr *icmp6_hdr = (struct icmp6_hdr *)icmp6_pkt;
+
+	//filling packet
+	bzero(icmp6_pkt, icmp6_pkt_s);
+
+	icmp6_hdr->icmp6_id = htons(ping_id);
+	icmp6_hdr->icmp6_seq = htons(msg_count);
+	icmp6_hdr->icmp6_type = ICMP6_ECHO_REQUEST;
+	icmp6_hdr->icmp6_code = 0;
+
+	//struct icmp6_pseudo_header pseudohdr;
+	//memcpy(pseudohdr.src, ((struct sockaddr_in6 *)ping_addr)->sin6_addr.s6_addr, 16);
+	//memcpy(pseudohdr.dst, ((struct sockaddr_in6 *)ping_addr)->sin6_addr.s6_addr, 16);
+	//pseudohdr._zero_pad = 0;
+	//pseudohdr.nxt = 58;
+	//icmp6_hdr->icmp6_cksum = checksum(&pseudohdr, sizeof(pseudohdr));
+
+	//send packet
+	ssize_t bytes_sent = sendto(
+			ping_sockfd, icmp6_pkt, icmp6_pkt_s, 0, ping_addr, ping_addr_s);
+	if (bytes_sent < 0) {
+		fprintf(stderr, "Error sending packet: %s\n", strerror(errno));
+		exit(1);
+	}
+
+	fprintf(stdout, "Sent packet:\n");
+
+	struct icmphdr icmphdr_compat;
+
+	// Only need to implement compatibility echo request/reply.
+	icmphdr_compat.type = icmp6_hdr->icmp6_type;
+	icmphdr_compat.code = icmp6_hdr->icmp6_code;
+	icmphdr_compat.checksum = icmp6_hdr->icmp6_cksum; // ICMPv6 contains no checksum.
+	icmphdr_compat.un.echo.id = icmp6_hdr->icmp6_id;
+	icmphdr_compat.un.echo.sequence = icmp6_hdr->icmp6_seq;
+
+	print_icmp_packet(ping_addr, icmp6_pkt_s, icmphdr_compat);
+}
+
 static void receive_pong (
 		int ping_sockfd, struct sockaddr *ping_addr
 ) {
 	struct sockaddr *pong_addr;
 	socklen_t pong_addr_s;
-	struct {
-		struct iphdr hdr;
-		struct ping_pkt icmp_ping_pkt;
-	} pkt;
 
 	struct sockaddr_in pong_addr4;
 	struct sockaddr_in6 pong_addr6;
@@ -218,8 +388,10 @@ static void receive_pong (
 			return;
 		}
 
+		size_t pkt_s = (2 << 16) - 1;
+		void *pkt = alloca(pkt_s);
 		ssize_t recv_bytes = recvfrom(
-				ping_sockfd, &pkt, sizeof(pkt), 0, pong_addr, &pong_addr_s);
+				ping_sockfd, pkt, pkt_s, 0, pong_addr, &pong_addr_s);
 		if (0 == recv_bytes) {
 			fprintf(stderr, "Error receiving ICMP packet: %s\n", "Unknown");
 			exit(1);
@@ -228,14 +400,95 @@ static void receive_pong (
 			exit(1);
 		}
 
-		if (pkt.icmp_ping_pkt.hdr.type != ICMP_ECHOREPLY ||
-				pkt.icmp_ping_pkt.hdr.un.echo.id != ping_id) {
-			fprintf(stdout, "Recieved ICMP packet, not pong\n");
+		void *pkt_payload;
+		uint8_t pkt_protocol;
+		size_t pkt_payload_len;
+		if (ping_addr->sa_family == AF_INET) {
+			pkt_payload = get_ip4_payload(
+					pkt, recv_bytes, &pkt_protocol, &pkt_payload_len);
+		} else {
+			// The IP header appears to be stripped for v6 but not v4?
+			//pkt_payload = get_ip6_payload(
+			//		pkt, recv_bytes, &pkt_protocol, &pkt_payload_len);
+			pkt_payload = pkt;
+			pkt_protocol = IPPROTO_ICMPV6;
+			pkt_payload_len = recv_bytes;
+		}
+
+		if (pkt_payload == NULL) {
+			fprintf(stderr, "Received invalid IP(v6) packet!\n");
 			continue;
 		}
 
+		uint8_t pkt_protocol_expected;
+		if (ping_addr->sa_family == AF_INET) {
+			pkt_protocol_expected = IPPROTO_ICMP;
+		} else {
+			pkt_protocol_expected = IPPROTO_ICMPV6;
+		}
+
+		if (pkt_protocol_expected != pkt_protocol) {
+			fprintf(stdout,
+					"Recieved IP packet, not ICMP: protocol %hhu, payload_length %zu.\n",
+					pkt_protocol, pkt_payload_len);
+			continue;
+		}
+
+		struct icmphdr icmphdr_compat;
+
+		if (ping_addr->sa_family == AF_INET) {
+			if (pkt_payload_len < sizeof(struct icmphdr)) {
+				fprintf(stderr, "Recieved truncated ICMP packet.\n");
+				continue;
+			}
+
+			struct icmphdr icmphdr_ip4;
+			memcpy(&icmphdr_ip4, pkt_payload, sizeof(struct icmphdr));
+
+			icmphdr_compat.type = icmphdr_ip4.type;
+			icmphdr_compat.code = icmphdr_ip4.code;
+			icmphdr_compat.checksum = icmphdr_ip4.checksum;
+			icmphdr_compat.un = icmphdr_ip4.un;
+		} else {
+			if (pkt_payload_len < sizeof(struct icmp6_hdr)) {
+				fprintf(stderr, "Recieved truncated ICMPv6 packet.\n");
+				continue;
+			}
+
+			struct icmp6_hdr icmphdr_ip6;
+			memcpy(&icmphdr_ip6, pkt_payload, sizeof(struct icmp6_hdr));
+
+			// Only need to implement compatibility echo request/reply.
+			icmphdr_compat.type = icmphdr_ip6.icmp6_type;
+			icmphdr_compat.code = icmphdr_ip6.icmp6_code;
+			icmphdr_compat.checksum = 0; // ICMPv6 contains no checksum.
+			icmphdr_compat.un.echo.id = icmphdr_ip6.icmp6_id;
+			icmphdr_compat.un.echo.sequence = icmphdr_ip6.icmp6_seq;
+		}
+
+		if (pong_addr->sa_family == AF_INET && icmphdr_compat.type != ICMP_ECHOREPLY) {
+			fprintf(stdout,
+					"Recieved ICMP packet, not echo reply: type %hhu, code %hhu.\n",
+					icmphdr_compat.type, icmphdr_compat.code);
+			continue;
+		} else if (pong_addr->sa_family == AF_INET6 && icmphdr_compat.type != ICMP6_ECHO_REPLY) {
+			fprintf(stdout,
+					"Recieved ICMPv6 packet, not echo reply: type %hhu, code %hhu.\n",
+					icmphdr_compat.type, icmphdr_compat.code);
+			continue;
+		}
+
+		if (ntohs(icmphdr_compat.un.echo.id) != ping_id) {
+			fprintf(stdout,
+					"Recieved echo reply packet, wrong id: id %hu.\n",
+					ntohs(icmphdr_compat.un.echo.id));
+			continue;
+		}
+
+		// TODO: check source IP.
+
 		fprintf(stdout, "Recieved packet:\n");
-		print_icmp_packet(pong_addr, recv_bytes, pkt.icmp_ping_pkt.hdr);
+		print_icmp_packet(pong_addr, recv_bytes, icmphdr_compat);
 
 		struct timespec time_end;
 		clock_gettime(CLOCK_MONOTONIC, &time_end);
@@ -281,6 +534,7 @@ int main(int argc, const char *argv[])
 	if (4 != argc) {
 		fprintf(stderr, "Incorrect arguments!\n");
 		usage(progname);
+		exit(1);
 	}
 
 	struct sockaddr_in ping_addr4;
@@ -307,10 +561,10 @@ int main(int argc, const char *argv[])
 			ping_addr = (struct sockaddr *)&ping_addr6;
 			ping_addr_s = sizeof(ping_addr6);
 		} else if (0 == parse_result) {
-			fprintf(stderr, "Invalid IPv4 address\n");
+			fprintf(stderr, "Invalid IPv6 address\n");
 			return 1;
 		} else {
-			fprintf(stderr, "Failed to parse IPv4 address: %s\n", strerror(errno));
+			fprintf(stderr, "Failed to parse IPv6 address: %s\n", strerror(errno));
 			return 1;
 		}
 	} else {
@@ -319,23 +573,33 @@ int main(int argc, const char *argv[])
 		return 1;
 	}
 
-	ping_sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+
+	if (ping_addr->sa_family == AF_INET) {
+		ping_sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+	} else {
+		ping_sockfd = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+	}
 	if (0 > ping_sockfd) {
 		fprintf(stderr, "Error creating socket: %s\n", strerror(errno));
 		return 0;
 	}
 
 	// set socket options at ip to TTL and value to 64,
-	int ttl_val = PING_TTL;
-	if (setsockopt(ping_sockfd, SOL_IP, IP_TTL, &ttl_val, sizeof(ttl_val)) != 0)
-	{
-		fprintf(stderr, "Failed setting socket TTL: %s\n", strerror(errno));
-		return 0;
+	if (ping_addr->sa_family == AF_INET) {
+		int ttl_val = PING_TTL;
+		if (setsockopt(ping_sockfd, SOL_IP, IP_TTL, &ttl_val, sizeof(ttl_val)) != 0) {
+			fprintf(stderr, "Failed setting socket TTL: %s\n", strerror(errno));
+			return 0;
+		}
 	}
 
 	int msg_count = 0;
 	do {
-		send_ping(msg_count++, ping_sockfd, ping_addr, ping_addr_s);
+		if (ping_addr->sa_family == AF_INET) {
+			send_ping_v4(msg_count++, ping_sockfd, ping_addr, ping_addr_s);
+		} else {
+			send_ping_v6(msg_count++, ping_sockfd, ping_addr, ping_addr_s);
+		}
 		receive_pong(ping_sockfd, ping_addr);
 	} while (1);
 
