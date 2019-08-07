@@ -1,5 +1,7 @@
 // main.c
 
+#define _POSIX_C_SOURCE (199309L)
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>
@@ -18,6 +20,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <errno.h>
+#include <glib.h>
 
 #define PING_PKT_S (64)
 #define PING_MSG_S (PING_PKT_S - sizeof(struct icmphdr))
@@ -69,13 +72,13 @@ static void set_ping_id () {
 	ping_id = (pid >> 16) ^ (pid & 0xffff);
 }
 
-__attribute__((pure))
-static struct timespec timeval2spec (struct timeval t) {
-	return (struct timespec){
-		.tv_sec = t.tv_sec,
-		.tv_nsec = 1000 * t.tv_usec
-	};
-}
+//__attribute__((pure))
+//static struct timespec timeval2spec (struct timeval t) {
+//	return (struct timespec){
+//		.tv_sec = t.tv_sec,
+//		.tv_nsec = 1000 * t.tv_usec
+//	};
+//}
 
 __attribute__((pure))
 static struct timeval timespec2val (struct timespec t) {
@@ -85,10 +88,10 @@ static struct timeval timespec2val (struct timespec t) {
 	};
 }
 
-__attribute__((pure))
-static useconds_t timespec2useconds (struct timespec t) {
-	return (1000 * 1000) * t.tv_sec + t.tv_nsec / 1000;
-}
+//__attribute__((pure))
+//static suseconds_t timespec2useconds (struct timespec t) {
+//	return (1000 * 1000) * t.tv_sec + t.tv_nsec / 1000;
+//}
 
 __attribute__((pure))
 static double timespec2double (struct timespec t) {

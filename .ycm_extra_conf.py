@@ -6,44 +6,34 @@ import ycm_core
 import re
 
 BASE_FLAGS = [
-        '-Wall',
-        '-Wextra',
-        '-Werror',
-        '-Wno-long-long',
-        '-Wno-variadic-macros',
-        '-fexceptions',
-        '-ferror-limit=10000',
-        '-DNDEBUG',
-        '-std=c++11',
-        '-xc++',
-        '-I/usr/lib/',
-        '-I/usr/include/'
-        ]
+    '-xc',
+    '-std=c99',
+    '-I/usr/include/',
+    '-I/usr/include/glib-2.0',
+    '-I/usr/lib/glib-2.0/include',
+    '-Wall',
+    '-Wextra',
+    '-Werror',
+    '-Wno-long-long',
+    '-Wno-variadic-macros',
+]
 
 SOURCE_EXTENSIONS = [
-        '.cpp',
-        '.cxx',
-        '.cc',
-        '.c',
-        '.m',
-        '.mm'
-        ]
+    '.c',
+]
 
 SOURCE_DIRECTORIES = [
-        'src',
-        'lib'
-        ]
+    'src',
+    'lib'
+]
 
 HEADER_EXTENSIONS = [
-        '.h',
-        '.hxx',
-        '.hpp',
-        '.hh'
-        ]
+    '.h',
+]
 
 HEADER_DIRECTORIES = [
-        'include'
-        ]
+    'include'
+]
 
 def IsHeaderFile(filename):
     extension = os.path.splitext(filename)[1]
