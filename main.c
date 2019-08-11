@@ -1,7 +1,6 @@
 // main.c
 
-#define _POSIX_C_SOURCE (199309L)
-#define _GNU_SOURCE
+#include "features.h"
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -27,6 +26,7 @@
 
 #include "packet.h"
 #include "checksum.h"
+#include "timeutil.h"
 
 #define PING_PKT_S (64)
 #define PING_MSG_S (PING_PKT_S - sizeof(struct icmphdr))
@@ -44,54 +44,6 @@ __attribute__((constructor))
 static void set_ping_id () {
 	uint32_t pid = getpid();
 	ping_id = (pid >> 16) ^ (pid & 0xffff);
-}
-
-__attribute__((pure))
-static struct timeval timespec2val (struct timespec t) {
-	return (struct timeval){
-		.tv_sec = t.tv_sec,
-		.tv_usec = t.tv_nsec / 1000
-	};
-}
-
-__attribute__((pure))
-static struct timespec useconds2timespec (suseconds_t us) {
-	return (struct timespec){
-		.tv_sec = us / (1000 * 1000),
-		.tv_nsec = 1000 * (us % (1000 * 1000))
-	};
-}
-
-__attribute__((pure))
-static double timespec2double (struct timespec t) {
-	return (double)t.tv_sec + (double)t.tv_nsec / (1000.0 * 1000.0 * 1000.0);
-}
-
-__attribute__((pure))
-static struct timespec diff_timespec (
-		struct timespec start, struct timespec end
-) {
-		struct timespec diff;
-		diff.tv_sec = end.tv_sec - start.tv_sec;
-		if (end.tv_nsec < start.tv_nsec) {
-			diff.tv_sec -= 1;
-			diff.tv_nsec = (1000 * 1000 * 1000) + end.tv_nsec - start.tv_nsec;
-		} else {
-			diff.tv_nsec = end.tv_nsec - start.tv_nsec;
-		}
-
-		return diff;
-}
-
-__attribute__((pure))
-static int cmp_timespec (struct timespec a, struct timespec b) {
-	if (a.tv_sec > b.tv_sec || (a.tv_sec == b.tv_sec && a.tv_nsec > b.tv_nsec)) {
-		return 1;
-	} else if (a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec) {
-		return 0;
-	} else {
-		return -1;
-	}
 }
 
 static void print_icmp_packet (
@@ -137,7 +89,9 @@ void sent_ping_list_destroy_notify(gpointer data) {
 	free(data);
 }
 
-gint sent_ping_compare_to_sequence(gconstpointer sent_ping_p, gconstpointer sequence_p) {
+gint sent_ping_compare_to_sequence (
+		gconstpointer sent_ping_p, gconstpointer sequence_p
+) {
 	const struct sent_ping *sent_ping = sent_ping_p;
 	const uint16_t *sequence = sequence_p;
 
@@ -152,7 +106,7 @@ gint sent_ping_compare_to_sequence(gconstpointer sent_ping_p, gconstpointer sequ
 		return 1;
 }
 
-static void init_ping_record() {
+static void init_ping_record () {
 	sent_ping_list = g_list_alloc();
 	if (!sent_ping_list) {
 		fprintf(stderr, "Failed to allocate ping record!\n");
@@ -160,11 +114,11 @@ static void init_ping_record() {
 	}
 }
 
-static void fini_ping_record() {
+static void fini_ping_record () {
 	g_list_free_full(sent_ping_list, sent_ping_list_destroy_notify);
 }
 
-void save_ping(struct sent_ping sent_ping_src) {
+void save_ping (struct sent_ping sent_ping_src) {
 	struct sent_ping *sent_ping_data = malloc(sizeof(struct sent_ping));
 	if (!sent_ping_data) {
 		fprintf(stderr, "Failed to allocate ping record entry!\n");
@@ -176,8 +130,9 @@ void save_ping(struct sent_ping sent_ping_src) {
 }
 
 // Returns current number of received pings, or 0 if no matching pong exists.
-unsigned short update_pong_received(uint16_t sequence) {
-	GList *matching_ping = g_list_find_custom(sent_ping_list, &sequence, sent_ping_compare_to_sequence);
+unsigned short update_pong_received (uint16_t sequence) {
+	GList *matching_ping = g_list_find_custom(
+			sent_ping_list, &sequence, sent_ping_compare_to_sequence);
 	if (!matching_ping)
 		return 0;
 
@@ -188,22 +143,24 @@ unsigned short update_pong_received(uint16_t sequence) {
 }
 
 // Time t should be created *before* the last receive_pong call.
-void cleanup_ping_record(struct timespec t) {
-	struct timespec timeout = useconds2timespec(PING_RECV_TIMEOUT_US);
+void cleanup_ping_record (struct timespec t) {
+	struct timespec timeout;
+	useconds2timespec(PING_RECV_TIMEOUT_US, &timeout);
 	for (GList *node = sent_ping_list->next;
 			node != NULL && node->next != NULL;
 			node = g_list_next(node)) {
 		struct sent_ping *sent_ping = (struct sent_ping *)node->data;
 
 		// t - sent_ping->time_sent
-		struct timespec time_elapsed = diff_timespec(sent_ping->time_sent, t);
+		struct timespec time_elapsed;
+		timespec_diff(&sent_ping->time_sent, &t, &time_elapsed);
 		// time_elapsed >= t
-		if (-1 < cmp_timespec(time_elapsed, timeout)) {
+		if (-1 < cmp_timespec(&time_elapsed, &timeout)) {
 			if (!sent_ping->received_pong) {
 				missed_ping_count += 1;
 				fprintf(stdout,
 						"No pong received after %.03fs for ping with sequence number %hu.\n",
-						timespec2double(timeout), sent_ping->sequence);
+						timespec2double(&timeout), sent_ping->sequence);
 				fprintf(stdout, "Consecuritve missed pings %u.\n", missed_ping_count);
 			} else {
 				missed_ping_count = 0;
@@ -213,7 +170,6 @@ void cleanup_ping_record(struct timespec t) {
 			sent_ping_list = g_list_remove_link(sent_ping_list, node);
 			sent_ping_list_destroy_notify(sent_ping_list->data);
 			g_list_free_1(node);
-
 		} else {
 			// Using CLOCK_MONOTONIC, ping sequences will always have time in order.
 			// Thus after we've found the first ping that has yet to expire ...
@@ -248,7 +204,8 @@ static void *get_ip4_payload (
 }
 
 static struct sent_ping send_ping_v4 (
-		uint16_t sequence, int ping_sockfd, struct sockaddr *ping_addr, size_t ping_addr_s
+		uint16_t sequence, int ping_sockfd, struct sockaddr *ping_addr,
+		size_t ping_addr_s
 ) {
 	size_t icmp_pkt_s = sizeof(struct icmphdr) + PING_MSG_S;
 	void *icmp_pkt = alloca(icmp_pkt_s);
@@ -317,7 +274,7 @@ static struct sent_ping send_ping_v6 (
 	// Only need to implement compatibility echo request/reply.
 	icmphdr_compat.type = icmp6_hdr->icmp6_type;
 	icmphdr_compat.code = icmp6_hdr->icmp6_code;
-	icmphdr_compat.checksum = icmp6_hdr->icmp6_cksum; // ICMPv6 contains no checksum.
+	icmphdr_compat.checksum = 0;  // ICMPv6 checksumming is handled by the kernel.
 	icmphdr_compat.icmp_echo_id = icmp6_hdr->icmp6_id;
 	icmphdr_compat.icmp_echo_seq = icmp6_hdr->icmp6_seq;
 
@@ -363,7 +320,8 @@ static void receive_pong (
 
 	do {
 		fd_set read_fds = fds;
-		struct timeval timeout_val = timespec2val(timeout);
+		struct timeval timeout_val;
+		timespec2val(&timeout, &timeout_val);
 		int select_avail = select(FD_SETSIZE, &read_fds, NULL, NULL, &timeout_val);
 		if (0 > select_avail) {
 			fprintf(stderr, "Error polling ICMP socket: %s\n", strerror(errno));
@@ -448,12 +406,14 @@ static void receive_pong (
 			icmphdr_compat.icmp_echo_seq = icmphdr_ip6.icmp6_seq;
 		}
 
-		if (pong_addr->sa_family == AF_INET && icmphdr_compat.type != ICMP_ECHOREPLY) {
+		if (pong_addr->sa_family == AF_INET &&
+				icmphdr_compat.type != ICMP_ECHOREPLY) {
 			fprintf(stdout,
 					"Recieved ICMP packet, not echo reply: type %hhu, code %hhu.\n",
 					icmphdr_compat.type, icmphdr_compat.code);
 			continue;
-		} else if (pong_addr->sa_family == AF_INET6 && icmphdr_compat.type != ICMP6_ECHO_REPLY) {
+		} else if (pong_addr->sa_family == AF_INET6 &&
+				icmphdr_compat.type != ICMP6_ECHO_REPLY) {
 			fprintf(stdout,
 					"Recieved ICMPv6 packet, not echo reply: type %hhu, code %hhu.\n",
 					icmphdr_compat.type, icmphdr_compat.code);
@@ -472,34 +432,43 @@ static void receive_pong (
 		fprintf(stdout, "Recieved packet:\n");
 		print_icmp_packet(pong_addr, recv_bytes, icmphdr_compat);
 
-		unsigned short npongs = update_pong_received(ntohs(icmphdr_compat.icmp_echo_seq));
+		unsigned short npongs = update_pong_received(
+				ntohs(icmphdr_compat.icmp_echo_seq));
 		if (npongs) {
 			fprintf(stdout, "Received pong for this ping %hu times.\n", npongs);
 		} else {
+			struct timespec ping_recv_timeout;
+			useconds2timespec(PING_RECV_TIMEOUT_US, &ping_recv_timeout);
 			fprintf(stdout, "Received pong for ping not sent within last %.02fs.\n",
-					timespec2double(useconds2timespec(PING_RECV_TIMEOUT_US)));
+					timespec2double(&ping_recv_timeout));
 		}
 
 		struct timespec time_end;
 		clock_gettime(CLOCK_MONOTONIC, &time_end);
 
 		// time_end - time_start
-		struct timespec time_elapsed = diff_timespec(time_start, time_end);
+		struct timespec time_elapsed;
+		timespec_diff(&time_start, &time_end, &time_elapsed);
 
 		// time_elapsed >= timeout
-		if (-1 < cmp_timespec(time_elapsed, timeout)) {
+		if (-1 < cmp_timespec(&time_elapsed, &timeout)) {
 			return;
 		}
 
 		// timeout - time_elapsed
-		timeout = diff_timespec(time_elapsed, timeout);
+		struct timespec timeout_next;
+		timespec_diff(&time_elapsed, &timeout, &timeout_next);
+		timeout = timeout_next;
 
-		fprintf(stdout, "Continuing select loop, remaining time %.03fs\n", timespec2double(timeout));
+		fprintf(stdout,
+				"Continuing select loop, remaining time %.03fs\n",
+				timespec2double(&timeout));
 	} while (1);
 }
 
 static void trigger_monitor_notify(const char *monitor_notify_cmd) {
-	fprintf(stdout, "Missed pings exceeds limit of %d.\n", PING_MAX_CONSECURIVE_MISSED_COUNT);
+	fprintf(stdout,
+			"Missed pings exceeds limit of %d.\n", PING_MAX_CONSECURIVE_MISSED_COUNT);
 
 	char *missed_ping_count_str;
 	if (0 > asprintf(&missed_ping_count_str, "%u", missed_ping_count)) {
@@ -526,7 +495,8 @@ static void trigger_monitor_notify(const char *monitor_notify_cmd) {
 
 		if (WIFSIGNALED(child_status)) {
 			fprintf(stderr,
-					"Child terminated by signal: %d (%s)\n", WTERMSIG(child_status), strsignal(WTERMSIG(child_status)));
+					"Child terminated by signal: %d (%s)\n", WTERMSIG(child_status),
+					strsignal(WTERMSIG(child_status)));
 			exit(1);
 		} else {
 			fprintf(stdout,

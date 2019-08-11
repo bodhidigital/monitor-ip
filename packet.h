@@ -1,5 +1,7 @@
 // packet.h
 
+#include "features.h"
+
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 

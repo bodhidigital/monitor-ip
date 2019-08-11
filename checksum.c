@@ -1,5 +1,7 @@
 // checksum.c
 
+#include "features.h"
+
 #include <stdint.h>
 
 #include "checksum.h"
