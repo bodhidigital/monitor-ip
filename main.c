@@ -50,24 +50,6 @@ struct ip4_pkt {
 	char options_and_data[0];
 } __attribute__((packed));
 
-//struct ip6_pkt {
-//	struct ip6_hdr hdr;
-//	char extensions_and_data[0];
-//} __attribute__((packed));
-
-//struct ip6_hopopts {
-//	struct ip6_hbh hdr;
-//	struct ip6_opt opts[0];
-//} __attribute__((packed));
-
-//struct icmp6_pseudo_header {
-//	uint8_t src[16];
-//	uint8_t dst[16];
-//	uint32_t len;
-//	uint32_t _zero_pad:24;
-//	uint8_t nxt;
-//} __attribute__((packed));
-
 static uint16_t ping_id;
 static GList *sent_ping_list;
 static unsigned int missed_ping_count = 0;
@@ -78,14 +60,6 @@ static void set_ping_id () {
 	ping_id = (pid >> 16) ^ (pid & 0xffff);
 }
 
-//__attribute__((pure))
-//static struct timespec timeval2spec (struct timeval t) {
-//	return (struct timespec){
-//		.tv_sec = t.tv_sec,
-//		.tv_nsec = 1000 * t.tv_usec
-//	};
-//}
-
 __attribute__((pure))
 static struct timeval timespec2val (struct timespec t) {
 	return (struct timeval){
@@ -93,11 +67,6 @@ static struct timeval timespec2val (struct timespec t) {
 		.tv_usec = t.tv_nsec / 1000
 	};
 }
-
-//__attribute__((pure))
-//static suseconds_t timespec2useconds (struct timespec t) {
-//	return (1000 * 1000) * t.tv_sec + t.tv_nsec / 1000;
-//}
 
 __attribute__((pure))
 static struct timespec useconds2timespec (suseconds_t us) {
@@ -139,7 +108,7 @@ static int cmp_timespec (struct timespec a, struct timespec b) {
 	}
 }
 
-// Calculating the Check Sum
+// Calculating the checksum.
 static uint16_t checksum (const void *b, uint16_t len) {
 	uint16_t *buf = (uint16_t *)b;
 
@@ -237,7 +206,7 @@ void save_ping(struct sent_ping sent_ping_src) {
 	sent_ping_list = g_list_append(sent_ping_list, sent_ping_data);
 }
 
-// current number of received pings, or 0 if no matching pong exists.
+// Returns current number of received pings, or 0 if no matching pong exists.
 unsigned short update_pong_received(uint16_t sequence) {
 	GList *matching_ping = g_list_find_custom(sent_ping_list, &sequence, sent_ping_compare_to_sequence);
 	if (!matching_ping)
@@ -249,7 +218,7 @@ unsigned short update_pong_received(uint16_t sequence) {
 	return sent_ping->received_pong;
 }
 
-// t should be created *before* the last receive_pong call.
+// Time t should be created *before* the last receive_pong call.
 void cleanup_ping_record(struct timespec t) {
 	struct timespec timeout = useconds2timespec(PING_RECV_TIMEOUT_US);
 	for (GList *node = sent_ping_list->next;
@@ -309,83 +278,11 @@ static void *get_ip4_payload (
 	return data;
 }
 
-//static void *get_ip6_payload (
-//		void *pkt, size_t len, uint8_t *protocol, size_t *payload_len
-//) {
-//	struct ip6_pkt *ip6_pkt = (struct ip6_pkt*)pkt;
-//	void *data;
-//
-//	size_t offset = sizeof(struct ip6_hdr);
-//	if (len < offset) {
-//		return NULL;
-//	}
-//
-//	size_t pkt_tot_len = ntohs(ip6_pkt->hdr.ip6_plen);
-//	uint8_t nxt = ip6_pkt->hdr.ip6_nxt;
-//	if (nxt == IPPROTO_HOPOPTS ||
-//			nxt == IPPROTO_ROUTING ||
-//			nxt == IPPROTO_FRAGMENT ||
-//			nxt == IPPROTO_DSTOPTS ||
-//			nxt == IPPROTO_MH) {
-//		if (len < offset + sizeof(struct ip6_ext)) {
-//			return NULL;
-//		}
-//
-//		struct ip6_ext *ip6_ext = (struct ip6_ext *)((char *)ip6_pkt + 40);
-//		if (nxt == IPPROTO_HOPOPTS) {
-//			if (len < offset + ip6_ext->ip6e_len + 8) {
-//				return NULL;
-//			}
-//
-//			struct ip6_hopopts *ip6_hopopts = (struct ip6_hopopts *)ip6_ext;
-//			struct ip6_opt *ip6_opt;
-//			for (size_t i = 0;
-//					ip6_hopopts->hdr.ip6h_len + 8 > i + sizeof(struct ip6_opt);
-//					i += sizeof(struct ip6_opt) + ip6_opt->ip6o_len) {
-//				ip6_opt = (struct ip6_opt *)((char *)&ip6_hopopts->opts[0] + i);
-//				if (ip6_opt->ip6o_type == IP6OPT_JUMBO) {
-//					if (ip6_opt->ip6o_len + 8 < sizeof(struct ip6_opt_jumbo)) {
-//						return NULL;
-//					}
-//
-//					struct ip6_opt_jumbo *ip6_opt_jumbo = (struct ip6_opt_jumbo *)ip6_opt;
-//					pkt_tot_len = ntohl(*(uint32_t *)&ip6_opt_jumbo->ip6oj_jumbo_len);
-//				}
-//			}
-//
-//			offset += ip6_ext->ip6e_len + 8;
-//			ip6_ext = (struct ip6_ext *)((char *)ip6_ext + ip6_ext->ip6e_len + 8);
-//		}
-//
-//		nxt = ip6_ext->ip6e_nxt;
-//		while (nxt == IPPROTO_ROUTING ||
-//				nxt == IPPROTO_FRAGMENT ||
-//				nxt == IPPROTO_DSTOPTS ||
-//				nxt == IPPROTO_MH) {
-//			if (len < offset + ip6_ext->ip6e_len + 8) {
-//				return NULL;
-//			}
-//
-//			offset += ip6_ext->ip6e_len + 8;
-//			ip6_ext = (struct ip6_ext *)((char *)ip6_ext + ip6_ext->ip6e_len + 8);
-//			nxt = ip6_ext->ip6e_nxt;
-//		}
-//	}
-//
-//	*protocol = nxt;
-//	*payload_len = (len >= pkt_tot_len) ? pkt_tot_len - offset : len;
-//	data = (char *)pkt + offset;
-//
-//	return data;
-//}
-
-// make a ping request
 static struct sent_ping send_ping_v4 (
 		uint16_t sequence, int ping_sockfd, struct sockaddr *ping_addr, size_t ping_addr_s
 ) {
 	struct ping_pkt icmp_ping_pkt;
 
-	//filling packet
 	bzero(&icmp_ping_pkt, sizeof(icmp_ping_pkt));
 
 	icmp_ping_pkt.hdr.type = ICMP_ECHO;
@@ -402,7 +299,7 @@ static struct sent_ping send_ping_v4 (
 	struct timespec time_sent;
 	clock_gettime(CLOCK_MONOTONIC, &time_sent);
 
-	//send packet
+	// Send packet
 	ssize_t bytes_sent = sendto(
 			ping_sockfd, &icmp_ping_pkt, sizeof(icmp_ping_pkt), 0, ping_addr,
 			ping_addr_s);
@@ -429,7 +326,6 @@ static struct sent_ping send_ping_v6 (
 	void *icmp6_pkt = alloca(icmp6_pkt_s);
 	struct icmp6_hdr *icmp6_hdr = (struct icmp6_hdr *)icmp6_pkt;
 
-	//filling packet
 	bzero(icmp6_pkt, icmp6_pkt_s);
 
 	icmp6_hdr->icmp6_id = htons(ping_id);
@@ -437,17 +333,10 @@ static struct sent_ping send_ping_v6 (
 	icmp6_hdr->icmp6_type = ICMP6_ECHO_REQUEST;
 	icmp6_hdr->icmp6_code = 0;
 
-	//struct icmp6_pseudo_header pseudohdr;
-	//memcpy(pseudohdr.src, ((struct sockaddr_in6 *)ping_addr)->sin6_addr.s6_addr, 16);
-	//memcpy(pseudohdr.dst, ((struct sockaddr_in6 *)ping_addr)->sin6_addr.s6_addr, 16);
-	//pseudohdr._zero_pad = 0;
-	//pseudohdr.nxt = 58;
-	//icmp6_hdr->icmp6_cksum = checksum(&pseudohdr, sizeof(pseudohdr));
-
 	struct timespec time_sent;
 	clock_gettime(CLOCK_MONOTONIC, &time_sent);
 
-	//send packet
+	// Send packet.
 	ssize_t bytes_sent = sendto(
 			ping_sockfd, icmp6_pkt, icmp6_pkt_s, 0, ping_addr, ping_addr_s);
 	if (bytes_sent < 0) {
@@ -475,7 +364,7 @@ static struct sent_ping send_ping_v6 (
 	};
 }
 
-// TODO: pass desired end time
+// TODO: Pass desired end timestamp.
 static void receive_pong (
 		int ping_sockfd, struct sockaddr *ping_addr
 ) {
@@ -539,9 +428,7 @@ static void receive_pong (
 			pkt_payload = get_ip4_payload(
 					pkt, recv_bytes, &pkt_protocol, &pkt_payload_len);
 		} else {
-			// The IP header appears to be stripped for v6 but not v4?
-			//pkt_payload = get_ip6_payload(
-			//		pkt, recv_bytes, &pkt_protocol, &pkt_payload_len);
+			// The IP header appears to be stripped for v6 but not v4.
 			pkt_payload = pkt;
 			pkt_protocol = IPPROTO_ICMPV6;
 			pkt_payload_len = recv_bytes;
@@ -696,14 +583,11 @@ static void usage(const char *progname) {
 	fprintf(stderr, "       -6      Interpret <address> as an IPv6 address.\n");
 }
 
-// Driver Code
 int main(int argc, const char *argv[])
 {
 	int ping_sockfd;
 	struct sockaddr *ping_addr;
 	size_t ping_addr_s;
-	//int addrlen = sizeof(addr_con);
-	//char net_buf[NI_MAXHOST];
 
 	init_ping_record();
 
@@ -770,7 +654,7 @@ int main(int argc, const char *argv[])
 		return 1;
 	}
 
-	// set socket options at ip to TTL and value to 64,
+	// Set socket options.
 	if (ping_addr->sa_family == AF_INET) {
 		int ttl_val = PING_TTL;
 		if (setsockopt(ping_sockfd, SOL_IP, IP_TTL, &ttl_val, sizeof(ttl_val)) != 0) {
