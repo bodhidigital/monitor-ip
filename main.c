@@ -1,11 +1,13 @@
 // main.c
 
 #define _POSIX_C_SOURCE (199309L)
+#define _GNU_SOURCE
 
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
@@ -29,6 +31,7 @@
 #define PING_SLEEP_US (1 * 1000 * 1000)
 #define PING_RECV_TIMEOUT_US (1 * 1000 * 1000)
 #define PING_TTL (64)
+#define PING_MAX_CONSECURIVE_MISSED_COUNT (1)
 
 // ping packet structure
 struct ping_pkt {
@@ -67,6 +70,7 @@ struct ip4_pkt {
 
 static uint16_t ping_id;
 static GList *sent_ping_list;
+static unsigned int missed_ping_count = 0;
 
 __attribute__((constructor))
 static void set_ping_id () {
@@ -248,21 +252,30 @@ unsigned short update_pong_received(uint16_t sequence) {
 // t should be created *before* the last receive_pong call.
 void cleanup_ping_record(struct timespec t) {
 	struct timespec timeout = useconds2timespec(PING_RECV_TIMEOUT_US);
-	for (GList *node = sent_ping_list->next; node != NULL; node = g_list_next(node)) {
+	for (GList *node = sent_ping_list->next;
+			node != NULL && node->next != NULL;
+			node = g_list_next(node)) {
 		struct sent_ping *sent_ping = (struct sent_ping *)node->data;
 
 		// t - sent_ping->time_sent
 		struct timespec time_elapsed = diff_timespec(sent_ping->time_sent, t);
 		// time_elapsed >= t
 		if (-1 < cmp_timespec(time_elapsed, timeout)) {
-			if (!sent_ping->received_pong)
+			if (!sent_ping->received_pong) {
+				missed_ping_count += 1;
 				fprintf(stdout,
 						"No pong received after %.03fs for ping with sequence number %hu.\n",
 						timespec2double(timeout), sent_ping->sequence);
+				fprintf(stdout, "Consecuritve missed pings %u.\n", missed_ping_count);
+			} else {
+				missed_ping_count = 0;
+				fprintf(stdout, "Reset missed pings.\n");
+			}
 
 			sent_ping_list = g_list_remove_link(sent_ping_list, node);
 			sent_ping_list_destroy_notify(sent_ping_list->data);
 			g_list_free_1(node);
+
 		} else {
 			// Using CLOCK_MONOTONIC, ping sequences will always have time in order.
 			// Thus after we've found the first ping that has yet to expire ...
@@ -635,6 +648,46 @@ static void receive_pong (
 	} while (1);
 }
 
+static void trigger_monitor_notify(const char *monitor_notify_cmd) {
+	fprintf(stdout, "Missed pings exceeds limit of %d.\n", PING_MAX_CONSECURIVE_MISSED_COUNT);
+
+	char *missed_ping_count_str;
+	if (0 > asprintf(&missed_ping_count_str, "%u", missed_ping_count)) {
+		fprintf(stderr,
+				"Error allocating missed ping count string: %s\n", strerror(errno));
+		exit(1);
+	}
+
+	pid_t fork_pid = fork();
+	if (0 == fork_pid) {
+		fprintf(stdout, "Executing monitor notify as PID %d.\n", getpid());
+		execlp(monitor_notify_cmd, monitor_notify_cmd, missed_ping_count_str);
+		fprintf(stderr, "Error executing monitor notify: %s.\n", strerror(errno));
+		exit(127);
+	} else if (0 < fork_pid) {
+		free(missed_ping_count_str);
+
+		int child_status;
+		fprintf(stdout, "Waiting for child with PID of %d.\n", fork_pid);
+		if (-1 >= waitpid(fork_pid, &child_status, 0)) {
+			fprintf(stderr, "Failed to wait for child: %s\n", strerror(errno));
+			exit(1);
+		}
+
+		if (WIFSIGNALED(child_status)) {
+			fprintf(stderr,
+					"Child terminated by signal: %d (%s)\n", WTERMSIG(child_status), strsignal(WTERMSIG(child_status)));
+			exit(1);
+		} else {
+			fprintf(stdout,
+					"Child exited with status code: %d\n", WEXITSTATUS(child_status));
+		}
+	} else {
+		fprintf(stderr,
+				"Error launching monitor notify child process: %s\n", strerror(errno));
+		exit(1);
+}
+}
 static void usage(const char *progname) {
 	fprintf(stderr, "Usage: %s [-4|-6] <address> [<hook command>]\n", progname);
 	fprintf(stderr, "\n");
@@ -666,10 +719,14 @@ int main(int argc, const char *argv[])
 		exit(1);
 	}
 
+	const char *af_inet_version = argv[1];
+	const char *ip_address_str = argv[2];
+	const char *monitor_notify_cmd = argv[3];
+
 	struct sockaddr_in ping_addr4;
 	struct sockaddr_in6 ping_addr6;
-	if (0 == strcmp("-4", argv[1])) {
-		int parse_result = inet_pton(AF_INET, argv[2], &ping_addr4.sin_addr);
+	if (0 == strcmp("-4", af_inet_version)) {
+		int parse_result = inet_pton(AF_INET, ip_address_str, &ping_addr4.sin_addr);
 		if (1 == parse_result) {
 			ping_addr4.sin_family = AF_INET;
 			ping_addr4.sin_port = PING_PORT;
@@ -682,8 +739,8 @@ int main(int argc, const char *argv[])
 			fprintf(stderr, "Failed to parse IPv4 address: %s\n", strerror(errno));
 			return 1;
 		}
-	} else if (0 == strcmp("-6", argv[1])) {
-		int parse_result = inet_pton(AF_INET6, argv[2], &ping_addr6.sin6_addr);
+	} else if (0 == strcmp("-6", af_inet_version)) {
+		int parse_result = inet_pton(AF_INET6, ip_address_str, &ping_addr6.sin6_addr);
 		if (1 == parse_result) {
 			ping_addr6.sin6_family = AF_INET6;
 			ping_addr6.sin6_port = PING_PORT;
@@ -710,7 +767,7 @@ int main(int argc, const char *argv[])
 	}
 	if (0 > ping_sockfd) {
 		fprintf(stderr, "Error creating socket: %s\n", strerror(errno));
-		return 0;
+		return 1;
 	}
 
 	// set socket options at ip to TTL and value to 64,
@@ -718,7 +775,7 @@ int main(int argc, const char *argv[])
 		int ttl_val = PING_TTL;
 		if (setsockopt(ping_sockfd, SOL_IP, IP_TTL, &ttl_val, sizeof(ttl_val)) != 0) {
 			fprintf(stderr, "Failed setting socket TTL: %s\n", strerror(errno));
-			return 0;
+			return 1;
 		}
 	}
 
@@ -737,12 +794,17 @@ int main(int argc, const char *argv[])
 		if (pings_sent)
 			cleanup_ping_record(time_since_last_receive);
 
+		if (PING_MAX_CONSECURIVE_MISSED_COUNT <= missed_ping_count) {
+			trigger_monitor_notify(monitor_notify_cmd);
+		}
+
 		save_ping(sent_ping);
 		pings_sent += 1;
 
 		clock_gettime(CLOCK_MONOTONIC, &time_since_last_receive);
 
 		receive_pong(ping_sockfd, ping_addr);
+
 	} while (1);
 
 	fini_ping_record();
