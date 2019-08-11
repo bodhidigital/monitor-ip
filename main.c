@@ -26,6 +26,7 @@
 #include <gmodule.h>
 
 #include "packet.h"
+#include "checksum.h"
 
 #define PING_PKT_S (64)
 #define PING_MSG_S (PING_PKT_S - sizeof(struct icmphdr))
@@ -91,24 +92,6 @@ static int cmp_timespec (struct timespec a, struct timespec b) {
 	} else {
 		return -1;
 	}
-}
-
-// Calculating the checksum.
-static uint16_t checksum (const void *b, uint16_t len) {
-	uint16_t *buf = (uint16_t *)b;
-
-	uint32_t sum;
-	for (sum = 0; 1 < len; len -= sizeof(uint16_t))
-		sum += *buf++;
-
-	if (len-- == 1)
-		sum += *(uint8_t*)buf;
-
-	sum = (sum >> 16) + (sum & 0xFFFF);
-	sum += (sum >> 16);
-
-	uint16_t result = (uint16_t)~sum;
-	return result;
 }
 
 static void print_icmp_packet (
@@ -277,7 +260,7 @@ static struct sent_ping send_ping_v4 (
 	icmphdr->icmp_echo_id = htons(ping_id);
 
 	icmphdr->icmp_echo_seq = htons(sequence);
-	icmphdr->checksum = checksum(icmp_pkt, sizeof(icmp_pkt));
+	icmphdr->checksum = checksum16_1s_complement(icmp_pkt, sizeof(icmp_pkt));
 
 	struct timespec time_sent;
 	clock_gettime(CLOCK_MONOTONIC, &time_sent);

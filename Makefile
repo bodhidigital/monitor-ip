@@ -1,11 +1,46 @@
 # Makefile
 
+LDFLAGS := \
+	-lglib-2.0 \
+	$(LDFLAGS)
 CFLAGS := \
 	-std=c99 \
 	-I/usr/include/ -I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include \
-	-lglib-2.0 \
 	-Wall -Wextra -Werror -Wno-long-long -Wno-variadic-macros \
 	$(CFLAGS)
 
-default:
-	gcc main.c $(CFLAGS) -o monitor-ip
+CFLAGS_DEBUG =
+
+executable := monitor-ip
+objects := checksum.o main.o
+headers := checksum.h packet.h
+
+.PHONY: all default debug
+all: default ;
+default: $(executable) ;
+debug: $(executable) ;
+
+.PHONY: clean
+clean: clean-executable clean-objects ;
+
+debug: CFLAGS_DEBUG += -ggdb -O0
+
+$(executable): $(objects)
+	gcc $? $(LDFLAGS) -o $@
+
+$(objects):%.o:%.c $(headers)
+	gcc -c $(CFLAGS) $(CFLAGS_DEBUG) $< -o $@
+
+.PHONY: clean-executable
+clean-executable:
+	if [ -f $(executable) ]; then \
+	  rm -f -- $(executable); \
+	fi
+
+.PHONY: clean-objects
+clean-objects:
+	for object in $(objects); do \
+	  if [ -f $$object ]; then \
+	    rm -f -- $$object; \
+	  fi; \
+	done
