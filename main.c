@@ -25,6 +25,8 @@
 #include <glib.h>
 #include <gmodule.h>
 
+#include "packet.h"
+
 #define PING_PKT_S (64)
 #define PING_MSG_S (PING_PKT_S - sizeof(struct icmphdr))
 #define PING_PORT (0)
@@ -32,23 +34,6 @@
 #define PING_RECV_TIMEOUT_US (1 * 1000 * 1000)
 #define PING_TTL (64)
 #define PING_MAX_CONSECURIVE_MISSED_COUNT (1)
-
-// ping packet structure
-struct ping_pkt {
-	struct icmphdr hdr;
-	char msg[PING_PKT_S];
-} __attribute__((packed));
-
-struct ip_pkt {
-	unsigned int version:4;
-	int _pad:4;
-	char remaining[0];
-} __attribute__((packed));
-
-struct ip4_pkt {
-	struct iphdr hdr;
-	char options_and_data[0];
-} __attribute__((packed));
 
 static uint16_t ping_id;
 static GList *sent_ping_list;
@@ -154,8 +139,9 @@ static void print_icmp_packet (
 	if (addr->sa_family == AF_INET) { // The kernel handles ICMPv6 checksuming.
 		fprintf(stdout, "\tChecksum: %hu\n", (unsigned short)ntohs(hdr.checksum));
 	}
-	fprintf(stdout, "\tID: %hu\n", (unsigned short)ntohs(hdr.un.echo.id));
-	fprintf(stdout, "\tSequence Number: %hu\n", (unsigned short)ntohs(hdr.un.echo.sequence));
+	fprintf(stdout, "\tID: %hu\n", (unsigned short)ntohs(hdr.icmp_echo_id));
+	fprintf(stdout,
+			"\tSequence Number: %hu\n", (unsigned short)ntohs(hdr.icmp_echo_seq));
 }
 
 struct sent_ping {
@@ -281,27 +267,24 @@ static void *get_ip4_payload (
 static struct sent_ping send_ping_v4 (
 		uint16_t sequence, int ping_sockfd, struct sockaddr *ping_addr, size_t ping_addr_s
 ) {
-	struct ping_pkt icmp_ping_pkt;
+	size_t icmp_pkt_s = sizeof(struct icmphdr) + PING_MSG_S;
+	void *icmp_pkt = alloca(icmp_pkt_s);
+	struct icmphdr *icmphdr = (struct icmphdr *)icmp_pkt;
 
-	bzero(&icmp_ping_pkt, sizeof(icmp_ping_pkt));
+	bzero(icmp_pkt, sizeof(icmp_pkt));
 
-	icmp_ping_pkt.hdr.type = ICMP_ECHO;
-	icmp_ping_pkt.hdr.un.echo.id = htons(ping_id);
+	icmphdr->type = ICMP_ECHO;
+	icmphdr->icmp_echo_id = htons(ping_id);
 
-	int i;
-	for (i = 0; i < (int)sizeof(icmp_ping_pkt.msg) - 1; i++)
-		icmp_ping_pkt.msg[i] = '\0';
-
-	icmp_ping_pkt.msg[i] = 0;
-	icmp_ping_pkt.hdr.un.echo.sequence = htons(sequence);
-	icmp_ping_pkt.hdr.checksum = checksum(&icmp_ping_pkt, sizeof(icmp_ping_pkt));
+	icmphdr->icmp_echo_seq = htons(sequence);
+	icmphdr->checksum = checksum(icmp_pkt, sizeof(icmp_pkt));
 
 	struct timespec time_sent;
 	clock_gettime(CLOCK_MONOTONIC, &time_sent);
 
 	// Send packet
 	ssize_t bytes_sent = sendto(
-			ping_sockfd, &icmp_ping_pkt, sizeof(icmp_ping_pkt), 0, ping_addr,
+			ping_sockfd, icmp_pkt, sizeof(icmp_pkt), 0, ping_addr,
 			ping_addr_s);
 	if (bytes_sent < 0) {
 		fprintf(stderr, "Error sending packet: %s\n", strerror(errno));
@@ -309,7 +292,7 @@ static struct sent_ping send_ping_v4 (
 	}
 
 	fprintf(stdout, "Sent packet:\n");
-	print_icmp_packet(ping_addr, sizeof(icmp_ping_pkt), icmp_ping_pkt.hdr);
+	print_icmp_packet(ping_addr, sizeof(icmp_pkt), *icmphdr);
 
 	return (struct sent_ping){
 		.sequence = sequence,
@@ -352,8 +335,8 @@ static struct sent_ping send_ping_v6 (
 	icmphdr_compat.type = icmp6_hdr->icmp6_type;
 	icmphdr_compat.code = icmp6_hdr->icmp6_code;
 	icmphdr_compat.checksum = icmp6_hdr->icmp6_cksum; // ICMPv6 contains no checksum.
-	icmphdr_compat.un.echo.id = icmp6_hdr->icmp6_id;
-	icmphdr_compat.un.echo.sequence = icmp6_hdr->icmp6_seq;
+	icmphdr_compat.icmp_echo_id = icmp6_hdr->icmp6_id;
+	icmphdr_compat.icmp_echo_seq = icmp6_hdr->icmp6_seq;
 
 	print_icmp_packet(ping_addr, icmp6_pkt_s, icmphdr_compat);
 
@@ -464,10 +447,7 @@ static void receive_pong (
 			struct icmphdr icmphdr_ip4;
 			memcpy(&icmphdr_ip4, pkt_payload, sizeof(struct icmphdr));
 
-			icmphdr_compat.type = icmphdr_ip4.type;
-			icmphdr_compat.code = icmphdr_ip4.code;
-			icmphdr_compat.checksum = icmphdr_ip4.checksum;
-			icmphdr_compat.un = icmphdr_ip4.un;
+			icmphdr_compat = icmphdr_ip4;
 		} else {
 			if (pkt_payload_len < sizeof(struct icmp6_hdr)) {
 				fprintf(stderr, "Recieved truncated ICMPv6 packet.\n");
@@ -481,8 +461,8 @@ static void receive_pong (
 			icmphdr_compat.type = icmphdr_ip6.icmp6_type;
 			icmphdr_compat.code = icmphdr_ip6.icmp6_code;
 			icmphdr_compat.checksum = 0; // ICMPv6 checksumming is handled by the kernel.
-			icmphdr_compat.un.echo.id = icmphdr_ip6.icmp6_id;
-			icmphdr_compat.un.echo.sequence = icmphdr_ip6.icmp6_seq;
+			icmphdr_compat.icmp_echo_id = icmphdr_ip6.icmp6_id;
+			icmphdr_compat.icmp_echo_seq = icmphdr_ip6.icmp6_seq;
 		}
 
 		if (pong_addr->sa_family == AF_INET && icmphdr_compat.type != ICMP_ECHOREPLY) {
@@ -497,10 +477,10 @@ static void receive_pong (
 			continue;
 		}
 
-		if (ntohs(icmphdr_compat.un.echo.id) != ping_id) {
+		if (ntohs(icmphdr_compat.icmp_echo_id) != ping_id) {
 			fprintf(stdout,
 					"Recieved echo reply packet, wrong id: id %hu.\n",
-					ntohs(icmphdr_compat.un.echo.id));
+					ntohs(icmphdr_compat.icmp_echo_id));
 			continue;
 		}
 
@@ -509,7 +489,7 @@ static void receive_pong (
 		fprintf(stdout, "Recieved packet:\n");
 		print_icmp_packet(pong_addr, recv_bytes, icmphdr_compat);
 
-		unsigned short npongs = update_pong_received(ntohs(icmphdr_compat.un.echo.sequence));
+		unsigned short npongs = update_pong_received(ntohs(icmphdr_compat.icmp_echo_seq));
 		if (npongs) {
 			fprintf(stdout, "Received pong for this ping %hu times.\n", npongs);
 		} else {
