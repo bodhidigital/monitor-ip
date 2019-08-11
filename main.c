@@ -46,39 +46,6 @@ static void set_ping_id () {
 	ping_id = (pid >> 16) ^ (pid & 0xffff);
 }
 
-static void print_icmp_packet (
-		const struct sockaddr *addr, ssize_t length, struct icmphdr hdr
-) {
-	const void *addr_data;
-	size_t addr_str_s;
-	const char *icmp_version;
-	if (addr->sa_family == AF_INET) {
-		addr_str_s = 16;
-		addr_data = &((struct sockaddr_in *)addr)->sin_addr;
-		icmp_version = "ICMP";
-	} else {
-		addr_str_s = 40;
-		addr_data = &((struct sockaddr_in6 *)addr)->sin6_addr;
-		icmp_version = "ICMPv6";
-	}
-
-	char *addr_str;
-	addr_str = (char *)alloca(addr_str_s);
-
-	inet_ntop(addr->sa_family, addr_data, addr_str, addr_str_s);
-
-	fprintf(stdout, "\tAddress: %s\n", addr_str);
-	fprintf(stdout, "\tLength: %zd\n", length);
-	fprintf(stdout, "\t%s Type: %hhu\n", icmp_version, (unsigned char)hdr.type);
-	fprintf(stdout, "\t%s Code: %hhu\n", icmp_version, (unsigned char)hdr.code);
-	if (addr->sa_family == AF_INET) { // The kernel handles ICMPv6 checksuming.
-		fprintf(stdout, "\tChecksum: %hu\n", (unsigned short)ntohs(hdr.checksum));
-	}
-	fprintf(stdout, "\tID: %hu\n", (unsigned short)ntohs(hdr.icmp_echo_id));
-	fprintf(stdout,
-			"\tSequence Number: %hu\n", (unsigned short)ntohs(hdr.icmp_echo_seq));
-}
-
 struct sent_ping {
 	uint16_t sequence;
 	struct timespec time_sent;
@@ -178,31 +145,6 @@ void cleanup_ping_record (struct timespec t) {
 	}
 }
 
-static void *get_ip4_payload (
-		void *pkt, size_t len, uint8_t *protocol, size_t *payload_len
-) {
-	struct ip4_pkt *ip4_pkt = (struct ip4_pkt*)pkt;
-	void *data;
-
-	if (len < sizeof(struct iphdr)) {
-		return NULL;
-	}
-
-	size_t pkt_tot_len = ntohs(ip4_pkt->hdr.tot_len);
-	size_t pkt_hdr_len = 4 * ip4_pkt->hdr.ihl;
-	if (pkt_tot_len < pkt_hdr_len) {
-		return NULL;
-	}
-
-	size_t offset = pkt_hdr_len;
-
-	*protocol = ip4_pkt->hdr.protocol;
-	*payload_len = ((len >= pkt_tot_len) ? pkt_tot_len : len) - offset;
-	data = (char *)pkt + offset;
-
-	return data;
-}
-
 static struct sent_ping send_ping_v4 (
 		uint16_t sequence, int ping_sockfd, struct sockaddr *ping_addr,
 		size_t ping_addr_s
@@ -232,7 +174,7 @@ static struct sent_ping send_ping_v4 (
 	}
 
 	fprintf(stdout, "Sent packet:\n");
-	print_icmp_packet(ping_addr, sizeof(icmp_pkt), *icmphdr);
+	print_icmphdr(ping_addr, sizeof(icmp_pkt), *icmphdr);
 
 	return (struct sent_ping){
 		.sequence = sequence,
@@ -278,7 +220,7 @@ static struct sent_ping send_ping_v6 (
 	icmphdr_compat.icmp_echo_id = icmp6_hdr->icmp6_id;
 	icmphdr_compat.icmp_echo_seq = icmp6_hdr->icmp6_seq;
 
-	print_icmp_packet(ping_addr, icmp6_pkt_s, icmphdr_compat);
+	print_icmphdr(ping_addr, icmp6_pkt_s, icmphdr_compat);
 
 	return (struct sent_ping){
 		.sequence = sequence,
@@ -430,7 +372,7 @@ static void receive_pong (
 		// TODO: check source IP.
 
 		fprintf(stdout, "Recieved packet:\n");
-		print_icmp_packet(pong_addr, recv_bytes, icmphdr_compat);
+		print_icmphdr(pong_addr, recv_bytes, icmphdr_compat);
 
 		unsigned short npongs = update_pong_received(
 				ntohs(icmphdr_compat.icmp_echo_seq));
@@ -506,8 +448,9 @@ static void trigger_monitor_notify(const char *monitor_notify_cmd) {
 		fprintf(stderr,
 				"Error launching monitor notify child process: %s\n", strerror(errno));
 		exit(1);
+	}
 }
-}
+
 static void usage(const char *progname) {
 	fprintf(stderr, "Usage: %s [-4|-6] <address> [<hook command>]\n", progname);
 	fprintf(stderr, "\n");

@@ -12,7 +12,7 @@ CFLAGS := \
 CFLAGS_DEBUG =
 
 executable := monitor-ip
-objects := timeutil.o checksum.o main.o
+objects := timeutil.o checksum.o packet.o main.o
 headers := timeutil.h checksum.h packet.h
 
 .PHONY: all default debug
