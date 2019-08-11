@@ -10,4 +10,6 @@ void useconds2timespec (suseconds_t, struct timespec *);
 double timespec2double (const struct timespec *);
 void timespec_diff (const struct timespec *, const struct timespec *,
 		struct timespec *);
+void timespec_add (const struct timespec *, const struct timespec *,
+		struct timespec *);
 int cmp_timespec (const struct timespec *, const struct timespec *);

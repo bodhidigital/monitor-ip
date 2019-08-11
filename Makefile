@@ -12,8 +12,8 @@ CFLAGS := \
 CFLAGS_DEBUG =
 
 executable := monitor-ip
-objects := timeutil.o checksum.o packet.o main.o
-headers := timeutil.h checksum.h packet.h
+objects := timeutil.o checksum.o packet.o record.o main.o
+headers := timeutil.h checksum.h packet.h record.h
 
 .PHONY: all default debug
 all: default ;
@@ -26,7 +26,7 @@ clean: clean-executable clean-objects ;
 debug: CFLAGS_DEBUG += -ggdb -O0
 
 $(executable): $(objects)
-	gcc $? $(LDFLAGS) -o $@
+	gcc $^ $(LDFLAGS) -o $@
 
 $(objects):%.o:%.c $(headers)
 	gcc -c $(CFLAGS) $(CFLAGS_DEBUG) $< -o $@

@@ -38,6 +38,20 @@ void timespec_diff (
 	}
 }
 
+void timespec_add (
+		const struct timespec *a, const struct timespec *b,
+		struct timespec *result
+) {
+	result->tv_sec = a->tv_sec + b->tv_sec;
+
+	if ((1000 * 1000 * 1000) > a->tv_nsec + b->tv_nsec) {
+		result->tv_nsec = a->tv_nsec + b->tv_nsec;
+	} else {
+		result->tv_sec += 1;
+		result->tv_nsec = a->tv_nsec + b->tv_nsec - (1000 * 1000 * 1000);
+	}
+}
+
 int cmp_timespec (const struct timespec *a, const struct timespec *b) {
 	if (a->tv_sec > b->tv_sec ||
 			(a->tv_sec == b->tv_sec && a->tv_nsec > b->tv_nsec)) {

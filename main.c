@@ -21,12 +21,11 @@
 #include <stdlib.h>
 #include <time.h>
 #include <errno.h>
-#include <glib.h>
-#include <gmodule.h>
 
 #include "packet.h"
 #include "checksum.h"
 #include "timeutil.h"
+#include "record.h"
 
 #define PING_PKT_S (64)
 #define PING_MSG_S (PING_PKT_S - sizeof(struct icmphdr))
@@ -37,8 +36,7 @@
 #define PING_MAX_CONSECURIVE_MISSED_COUNT (1)
 
 static uint16_t ping_id;
-static GList *sent_ping_list;
-static unsigned int missed_ping_count = 0;
+static struct ping_record *ping_record;
 
 __attribute__((constructor))
 static void set_ping_id () {
@@ -46,106 +44,7 @@ static void set_ping_id () {
 	ping_id = (pid >> 16) ^ (pid & 0xffff);
 }
 
-struct sent_ping {
-	uint16_t sequence;
-	struct timespec time_sent;
-	unsigned short received_pong;
-};
-
-void sent_ping_list_destroy_notify(gpointer data) {
-	free(data);
-}
-
-gint sent_ping_compare_to_sequence (
-		gconstpointer sent_ping_p, gconstpointer sequence_p
-) {
-	const struct sent_ping *sent_ping = sent_ping_p;
-	const uint16_t *sequence = sequence_p;
-
-	if (!sent_ping)
-		return -1;
-
-	if (sent_ping->sequence < *sequence)
-		return -1;
-	else if (sent_ping->sequence == *sequence)
-		return 0;
-	else
-		return 1;
-}
-
-static void init_ping_record () {
-	sent_ping_list = g_list_alloc();
-	if (!sent_ping_list) {
-		fprintf(stderr, "Failed to allocate ping record!\n");
-		exit(1);
-	}
-}
-
-static void fini_ping_record () {
-	g_list_free_full(sent_ping_list, sent_ping_list_destroy_notify);
-}
-
-void save_ping (struct sent_ping sent_ping_src) {
-	struct sent_ping *sent_ping_data = malloc(sizeof(struct sent_ping));
-	if (!sent_ping_data) {
-		fprintf(stderr, "Failed to allocate ping record entry!\n");
-		exit(1);
-	}
-	*sent_ping_data = sent_ping_src;
-
-	sent_ping_list = g_list_append(sent_ping_list, sent_ping_data);
-}
-
-// Returns current number of received pings, or 0 if no matching pong exists.
-unsigned short update_pong_received (uint16_t sequence) {
-	GList *matching_ping = g_list_find_custom(
-			sent_ping_list, &sequence, sent_ping_compare_to_sequence);
-	if (!matching_ping)
-		return 0;
-
-	struct sent_ping *sent_ping = matching_ping->data;
-	sent_ping->received_pong += 1;
-
-	return sent_ping->received_pong;
-}
-
-// Time t should be created *before* the last receive_pong call.
-void cleanup_ping_record (struct timespec t) {
-	struct timespec timeout;
-	useconds2timespec(PING_RECV_TIMEOUT_US, &timeout);
-	for (GList *node = sent_ping_list->next;
-			node != NULL && node->next != NULL;
-			node = g_list_next(node)) {
-		struct sent_ping *sent_ping = (struct sent_ping *)node->data;
-
-		// t - sent_ping->time_sent
-		struct timespec time_elapsed;
-		timespec_diff(&sent_ping->time_sent, &t, &time_elapsed);
-		// time_elapsed >= t
-		if (-1 < cmp_timespec(&time_elapsed, &timeout)) {
-			if (!sent_ping->received_pong) {
-				missed_ping_count += 1;
-				fprintf(stdout,
-						"No pong received after %.03fs for ping with sequence number %hu.\n",
-						timespec2double(&timeout), sent_ping->sequence);
-				fprintf(stdout, "Consecuritve missed pings %u.\n", missed_ping_count);
-			} else {
-				missed_ping_count = 0;
-				fprintf(stdout, "Reset missed pings.\n");
-			}
-
-			sent_ping_list = g_list_remove_link(sent_ping_list, node);
-			sent_ping_list_destroy_notify(sent_ping_list->data);
-			g_list_free_1(node);
-		} else {
-			// Using CLOCK_MONOTONIC, ping sequences will always have time in order.
-			// Thus after we've found the first ping that has yet to expire ...
-			return;
-		}
-	}
-}
-
-static struct sent_ping send_ping_v4 (
+static struct ping_record_entry send_ping_v4 (
 		uint16_t sequence, int ping_sockfd, struct sockaddr *ping_addr,
 		size_t ping_addr_s
 ) {
@@ -161,9 +60,6 @@ static struct sent_ping send_ping_v4 (
 	icmphdr->icmp_echo_seq = htons(sequence);
 	icmphdr->checksum = checksum16_1s_complement(icmp_pkt, sizeof(icmp_pkt));
 
-	struct timespec time_sent;
-	clock_gettime(CLOCK_MONOTONIC, &time_sent);
-
 	// Send packet
 	ssize_t bytes_sent = sendto(
 			ping_sockfd, icmp_pkt, sizeof(icmp_pkt), 0, ping_addr,
@@ -173,17 +69,21 @@ static struct sent_ping send_ping_v4 (
 		exit(1);
 	}
 
+	// Immediately after send.
+	struct timespec time_sent;
+	clock_gettime(CLOCK_MONOTONIC, &time_sent);
+
 	fprintf(stdout, "Sent packet:\n");
 	print_icmphdr(ping_addr, sizeof(icmp_pkt), *icmphdr);
 
-	return (struct sent_ping){
+	return (struct ping_record_entry){
 		.sequence = sequence,
 		.time_sent = time_sent,
-		.received_pong = 0
+		.pong_cnt = 0
 	};
 }
 
-static struct sent_ping send_ping_v6 (
+static struct ping_record_entry send_ping_v6 (
 		uint16_t sequence, int ping_sockfd, struct sockaddr *ping_addr,
 		size_t ping_addr_s
 ) {
@@ -198,9 +98,6 @@ static struct sent_ping send_ping_v6 (
 	icmp6_hdr->icmp6_type = ICMP6_ECHO_REQUEST;
 	icmp6_hdr->icmp6_code = 0;
 
-	struct timespec time_sent;
-	clock_gettime(CLOCK_MONOTONIC, &time_sent);
-
 	// Send packet.
 	ssize_t bytes_sent = sendto(
 			ping_sockfd, icmp6_pkt, icmp6_pkt_s, 0, ping_addr, ping_addr_s);
@@ -208,6 +105,10 @@ static struct sent_ping send_ping_v6 (
 		fprintf(stderr, "Error sending packet: %s\n", strerror(errno));
 		exit(1);
 	}
+
+	// Immediately after send.
+	struct timespec time_sent;
+	clock_gettime(CLOCK_MONOTONIC, &time_sent);
 
 	fprintf(stdout, "Sent packet:\n");
 
@@ -222,10 +123,10 @@ static struct sent_ping send_ping_v6 (
 
 	print_icmphdr(ping_addr, icmp6_pkt_s, icmphdr_compat);
 
-	return (struct sent_ping){
+	return (struct ping_record_entry){
 		.sequence = sequence,
 		.time_sent = time_sent,
-		.received_pong = 0
+		.pong_cnt = 0
 	};
 }
 
@@ -374,15 +275,13 @@ static void receive_pong (
 		fprintf(stdout, "Recieved packet:\n");
 		print_icmphdr(pong_addr, recv_bytes, icmphdr_compat);
 
-		unsigned short npongs = update_pong_received(
-				ntohs(icmphdr_compat.icmp_echo_seq));
+		unsigned short npongs = ping_record_update_pong(
+				ping_record, ntohs(icmphdr_compat.icmp_echo_seq));
 		if (npongs) {
 			fprintf(stdout, "Received pong for this ping %hu times.\n", npongs);
 		} else {
-			struct timespec ping_recv_timeout;
-			useconds2timespec(PING_RECV_TIMEOUT_US, &ping_recv_timeout);
 			fprintf(stdout, "Received pong for ping not sent within last %.02fs.\n",
-					timespec2double(&ping_recv_timeout));
+					timespec2double(&ping_record->timeout));
 		}
 
 		struct timespec time_end;
@@ -413,7 +312,7 @@ static void trigger_monitor_notify(const char *monitor_notify_cmd) {
 			"Missed pings exceeds limit of %d.\n", PING_MAX_CONSECURIVE_MISSED_COUNT);
 
 	char *missed_ping_count_str;
-	if (0 > asprintf(&missed_ping_count_str, "%u", missed_ping_count)) {
+	if (0 > asprintf(&missed_ping_count_str, "%llu", ping_record->missed_cnt)) {
 		fprintf(stderr,
 				"Error allocating missed ping count string: %s\n", strerror(errno));
 		exit(1);
@@ -464,8 +363,6 @@ int main(int argc, const char *argv[])
 	int ping_sockfd;
 	struct sockaddr *ping_addr;
 	size_t ping_addr_s;
-
-	init_ping_record();
 
 	const char *progname;
 	if (0 < argc)
@@ -539,35 +436,40 @@ int main(int argc, const char *argv[])
 		}
 	}
 
+	struct timespec ping_receive_timeout;
+	useconds2timespec(PING_RECV_TIMEOUT_US, &ping_receive_timeout);
+	ping_record = ping_record_init(&ping_receive_timeout);
+
 	struct timespec time_since_last_receive;
 	uint64_t pings_sent = 0;
 	do {
 		// sequence = pings_sent % (1 << 16) .
 		uint16_t sequence = pings_sent;
-		struct sent_ping sent_ping;
+		struct ping_record_entry ping_record_entry;
 		if (ping_addr->sa_family == AF_INET) {
-			sent_ping = send_ping_v4(sequence, ping_sockfd, ping_addr, ping_addr_s);
+			ping_record_entry = send_ping_v4(
+					sequence, ping_sockfd, ping_addr, ping_addr_s);
 		} else {
-			sent_ping = send_ping_v6(sequence, ping_sockfd, ping_addr, ping_addr_s);
+			ping_record_entry = send_ping_v6(
+					sequence, ping_sockfd, ping_addr, ping_addr_s);
 		}
 
 		if (pings_sent)
-			cleanup_ping_record(time_since_last_receive);
+			ping_record_collect_expired(ping_record, &time_since_last_receive);
 
-		if (PING_MAX_CONSECURIVE_MISSED_COUNT <= missed_ping_count) {
+		if (PING_MAX_CONSECURIVE_MISSED_COUNT <= ping_record->missed_cnt) {
 			trigger_monitor_notify(monitor_notify_cmd);
 		}
 
-		save_ping(sent_ping);
+		ping_record_submit(ping_record, &ping_record_entry);
 		pings_sent += 1;
 
 		clock_gettime(CLOCK_MONOTONIC, &time_since_last_receive);
 
 		receive_pong(ping_sockfd, ping_addr);
-
 	} while (1);
 
-	fini_ping_record();
+	ping_record_free(ping_record);
 
 	return 0;
 }
