@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <assert.h>
 #include <glib.h>
 #include <gmodule.h>
@@ -33,7 +34,9 @@ void ping_record_free (struct ping_record *ping_record) {
 	free(ping_record);
 }
 
-void ping_record_submit (struct ping_record *ping_record, struct ping_record_entry *ping_record_entry) {
+void ping_record_submit (
+		struct ping_record *ping_record, struct ping_record_entry *ping_record_entry
+) {
 	struct ping_record_entry *entry_data = malloc(sizeof(struct ping_record_entry));
 	assert(entry_data);
 	*entry_data = *ping_record_entry;
@@ -42,14 +45,21 @@ void ping_record_submit (struct ping_record *ping_record, struct ping_record_ent
 }
 
 // Returns current number of received pings, or 0 if no matching pong exists.
-unsigned short ping_record_update_pong (struct ping_record *ping_record, uint16_t sequence) {
+bool ping_record_update_pong (
+		struct ping_record *ping_record, uint16_t sequence,
+		struct ping_record_entry *entry_data_out
+) {
 	GList *matching_entry_node = g_list_find_custom(
 			ping_record->l, &sequence, ping_record_compare_to_sequence);
 	if (!matching_entry_node)
-		return 0;
+		return false;
 
 	struct ping_record_entry *entry_data = matching_entry_node->data;
-	return ++entry_data->pong_cnt;
+	entry_data->pong_cnt += 1;
+
+	assert(sequence == entry_data->sequence);
+	*entry_data_out = *entry_data;
+	return true;
 }
 
 // Time t should be created *before* the last receive_pong call.

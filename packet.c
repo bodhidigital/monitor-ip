@@ -4,9 +4,11 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
+#include <netinet/icmp6.h>
 #include <arpa/inet.h>
 #include <alloca.h>
 #include <stdio.h>
+#include <strings.h>
 
 #include "packet.h"
 
@@ -70,3 +72,18 @@ void *get_ip4_payload (
 	return data;
 }
 
+void packet_icmp6hdr_compat (
+		const struct icmp6_hdr *hdr6, struct icmphdr *hdr_compat_out
+) {
+	struct icmphdr hdr_compat;
+	bzero(&hdr_compat, sizeof(struct icmphdr));
+
+	// Only need to implement compatibility echo request/reply.
+	hdr_compat.type = hdr6->icmp6_type;
+	hdr_compat.code = hdr6->icmp6_code;
+	hdr_compat.checksum = 0; // ICMPv6 checksumming is handled by the kernel.
+	hdr_compat.icmp_echo_id = hdr6->icmp6_id;
+	hdr_compat.icmp_echo_seq = hdr6->icmp6_seq;
+
+	*hdr_compat_out = hdr_compat;
+}

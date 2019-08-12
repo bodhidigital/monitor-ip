@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
+#include <netinet/icmp6.h>
 
 #define icmp_echo_seq un.echo.sequence
 #define icmp_echo_id un.echo.id
@@ -17,3 +18,4 @@ struct ip4_pkt {
 
 void print_icmphdr (const struct sockaddr *, ssize_t, struct icmphdr);
 void *get_ip4_payload (void *, size_t, uint8_t *, size_t *);
+void packet_icmp6hdr_compat (const struct icmp6_hdr *, struct icmphdr *);
