@@ -2,28 +2,16 @@
 
 #include "features.h"
 
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/select.h>
-#include <sys/time.h>
-#include <sys/wait.h>
-#include <netinet/in.h>
 #include <netinet/ip.h>
-#include <netinet/ip6.h>
 #include <netinet/ip_icmp.h>
-#include <netinet/icmp6.h>
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <string.h>
-#include <strings.h>
 #include <stdlib.h>
-#include <time.h>
 #include <errno.h>
 
-#include "packet.h"
-#include "checksum.h"
 #include "timeutil.h"
 #include "record.h"
 #include "netio.h"
@@ -32,8 +20,8 @@
 #define PING_PKT_S (64)
 #define PING_MSG_S (PING_PKT_S - sizeof(struct icmphdr))
 #define PING_PORT (0)
-#define PING_SLEEP_US (1 * 1000 * 1000)
-#define PING_RECV_TIMEOUT_US (1 * 1000 * 1000)
+#define TIME_PING_DELAY_US (1 * 1000 * 1000)
+#define TIMEOUT_PING_EXPIRE_US (1 * 1000 * 1000)
 #define PING_TTL (64)
 #define PING_MAX_CONSECURIVE_MISSED_COUNT (1)
 
@@ -140,9 +128,12 @@ int main(int argc, const char *argv[])
 		.notify_command = monitor_notify_cmd
 	};
 
-	struct timespec timeout_ping_receive;
-	useconds2timespec(PING_RECV_TIMEOUT_US, &timeout_ping_receive);
-	ping_record = ping_record_init(&timeout_ping_receive);
+	struct timespec timeout_ping_expire;
+	useconds2timespec(TIMEOUT_PING_EXPIRE_US, &timeout_ping_expire);
+	ping_record = ping_record_init(&timeout_ping_expire);
+
+	struct timespec time_ping_delay;
+	useconds2timespec(TIME_PING_DELAY_US, &time_ping_delay);
 
 	struct timespec time_since_last_receive;
 	uint64_t pings_sent = 0;
@@ -167,7 +158,7 @@ int main(int argc, const char *argv[])
 		clock_gettime(CLOCK_MONOTONIC, &time_since_last_receive);
 
 		struct timespec time_recv_end;
-		timespec_add(&time_ping_start, &timeout_ping_receive, &time_recv_end);
+		timespec_add(&time_ping_start, &time_ping_delay, &time_recv_end);
 
 		struct netio_pong *pongs;
 		size_t pongs_s = netio_receive(&netio_params, ping_sockfd, ping_addr,
