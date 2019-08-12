@@ -27,6 +27,7 @@
 #include "timeutil.h"
 #include "record.h"
 #include "netio.h"
+#include "monitor.h"
 
 #define PING_PKT_S (64)
 #define PING_MSG_S (PING_PKT_S - sizeof(struct icmphdr))
@@ -43,49 +44,6 @@ __attribute__((constructor))
 static void set_ping_id () {
 	uint32_t pid = getpid();
 	ping_id = (pid >> 16) ^ (pid & 0xffff);
-}
-
-static void trigger_monitor_notify(const char *monitor_notify_cmd) {
-	fprintf(stdout,
-			"Missed pings exceeds limit of %d.\n", PING_MAX_CONSECURIVE_MISSED_COUNT);
-
-	char *missed_ping_count_str;
-	if (0 > asprintf(&missed_ping_count_str, "%llu", ping_record->missed_cnt)) {
-		fprintf(stderr,
-				"Error allocating missed ping count string: %s\n", strerror(errno));
-		exit(1);
-	}
-
-	pid_t fork_pid = fork();
-	if (0 == fork_pid) {
-		fprintf(stdout, "Executing monitor notify as PID %d.\n", getpid());
-		execlp(monitor_notify_cmd, monitor_notify_cmd, missed_ping_count_str);
-		fprintf(stderr, "Error executing monitor notify: %s.\n", strerror(errno));
-		exit(127);
-	} else if (0 < fork_pid) {
-		free(missed_ping_count_str);
-
-		int child_status;
-		fprintf(stdout, "Waiting for child with PID of %d.\n", fork_pid);
-		if (-1 >= waitpid(fork_pid, &child_status, 0)) {
-			fprintf(stderr, "Failed to wait for child: %s\n", strerror(errno));
-			exit(1);
-		}
-
-		if (WIFSIGNALED(child_status)) {
-			fprintf(stderr,
-					"Child terminated by signal: %d (%s)\n", WTERMSIG(child_status),
-					strsignal(WTERMSIG(child_status)));
-			exit(1);
-		} else {
-			fprintf(stdout,
-					"Child exited with status code: %d\n", WEXITSTATUS(child_status));
-		}
-	} else {
-		fprintf(stderr,
-				"Error launching monitor notify child process: %s\n", strerror(errno));
-		exit(1);
-	}
 }
 
 static void usage(const char *progname) {
@@ -176,6 +134,12 @@ int main(int argc, const char *argv[])
 		.id = ping_id
 	};
 
+	struct monitor_params monitor_params = {
+		.block = true,
+		.missed_max = PING_MAX_CONSECURIVE_MISSED_COUNT,
+		.notify_command = monitor_notify_cmd
+	};
+
 	struct timespec timeout_ping_receive;
 	useconds2timespec(PING_RECV_TIMEOUT_US, &timeout_ping_receive);
 	ping_record = ping_record_init(&timeout_ping_receive);
@@ -195,9 +159,7 @@ int main(int argc, const char *argv[])
 		if (pings_sent)
 			ping_record_collect_expired(ping_record, &time_since_last_receive);
 
-		if (PING_MAX_CONSECURIVE_MISSED_COUNT <= ping_record->missed_cnt) {
-			trigger_monitor_notify(monitor_notify_cmd);
-		}
+		test_monitor_notify_trigger(&monitor_params, ping_record->missed_cnt);
 
 		ping_record_submit(ping_record, &ping_record_entry);
 		pings_sent += 1;
