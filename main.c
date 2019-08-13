@@ -135,7 +135,6 @@ int main(int argc, const char *argv[])
 	struct timespec time_ping_delay;
 	useconds2timespec(TIME_PING_DELAY_US, &time_ping_delay);
 
-	struct timespec time_since_last_receive;
 	uint64_t pings_sent = 0;
 	do {
 		struct timespec time_ping_start;
@@ -147,36 +146,47 @@ int main(int argc, const char *argv[])
 		netio_send(
 				&netio_params, ping_sockfd, ping_addr, sequence, &ping_record_entry);
 
-		if (pings_sent)
-			ping_record_collect_expired(ping_record, &time_since_last_receive);
-
-		test_monitor_notify_trigger(&monitor_params, ping_record->missed_cnt);
-
 		ping_record_submit(ping_record, &ping_record_entry);
 		pings_sent += 1;
-
-		clock_gettime(CLOCK_MONOTONIC, &time_since_last_receive);
 
 		struct timespec time_recv_end;
 		timespec_add(&time_ping_start, &time_ping_delay, &time_recv_end);
 
+		// MUST FREE pongs
 		struct netio_pong *pongs;
 		size_t pongs_s = netio_receive(&netio_params, ping_sockfd, ping_addr,
 				&time_recv_end, &pongs);
+
+		struct timespec time_since_last_receive;
+		clock_gettime(CLOCK_MONOTONIC, &time_since_last_receive);
 
 		for (size_t i = 0; pongs_s > i; ++i) {
 			struct netio_pong pong = pongs[i];
 
 			struct ping_record_entry entry_data;
-			ping_record_update_pong(ping_record, pong.seq, &entry_data);
+			if (!ping_record_update_pong(ping_record, pong.seq, &entry_data)) {
+				fprintf(stderr,
+						"Pong for sequence %hu received, but not in sent record, possibly "
+						"expired or errant?\n", pong.seq);
+				continue;
+			}
 
 			struct timespec time_rtt;
 			timespec_diff(&entry_data.time_sent, &pong.time_recv, &time_rtt);
 
 			const char *is_dup_str = (1 < entry_data.pong_cnt) ? " (dup)" : "";
-			fprintf(stdout, "Pong for sequence %hu%s, rtt: %.02fms\n",
-				entry_data.sequence, is_dup_str, timespec2double(&time_rtt) * 1000.);
+			const char *is_exp_str =
+				(1 > cmp_timespec(&timeout_ping_expire, &time_rtt)) ? " (expired)" : "";
+			fprintf(stdout, "Pong for sequence %hu%s, rtt: %.02fms%s\n",
+				entry_data.sequence, is_dup_str, timespec2double(&time_rtt) * 1000.,
+				is_exp_str);
 		}
+
+		free(pongs);
+
+		ping_record_collect_expired(ping_record, &time_since_last_receive);
+
+		test_monitor_notify_trigger(&monitor_params, ping_record->missed_cnt);
 	} while (1);
 
 	ping_record_free(ping_record);
