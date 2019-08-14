@@ -26,6 +26,11 @@ void test_monitor_notify_trigger (
 			"Missed pings (%llu) exceeds limit of %llu.\n",
 			missed_cnt, params->missed_max);
 
+	if (!params->notify_command) {
+		fprintf(stderr, "Warning: no notify command set.\n");
+		return;
+	}
+
 	char *missed_ping_count_str;
 	assert(0 <= asprintf(&missed_ping_count_str, "%llu", missed_cnt));
 
