@@ -65,7 +65,11 @@ bool ping_record_update_pong (
 
 // Time t should be created *before* the last receive_pong call.
 void ping_record_collect_expired (struct ping_record *ping_record, struct timespec *t) {
-	for (GList *node = ping_record->l; node != NULL; node = node->next) {
+	// Must get address of next node before freeing it at the end of the loop.
+	GList *next_node;
+	for (GList *node = ping_record->l; node != NULL; node = next_node) {
+		next_node = node->next;
+
 		struct ping_record_entry *entry_data = (struct ping_record_entry *)node->data;
 
 		// t - sent_ping->time_sent
