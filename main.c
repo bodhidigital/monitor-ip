@@ -18,6 +18,7 @@
 #include "record.h"
 #include "netio.h"
 #include "monitor.h"
+#include "log.h"
 
 #define PING_PORT (0)
 
@@ -75,31 +76,32 @@ static uint16_t monitor_ip_get_ping_id () {
 }
 
 static void monitor_ip_usage (const char *progname) {
-	fprintf(stderr, "USAGE: %s [OPTIONS] <address> [<hook command>]\n", progname);
-	fprintf(stderr, "\n");
-	fprintf(stderr, "Send pings (echo requests) to <address>, excessive missed pongs (echo response)\n"
-					"results in <hook command> being run, if it is set.\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "OPTIONS:\n");
-	fprintf(stderr, "    -h --help                   Print this message.\n");
-	fprintf(stderr, "    -v --verbose                Be verbose (may be specified multiple times).\n");
-	fprintf(stderr, "    -4 --ipv4                   Interpret <address> as an IPv4 address.\n"
-					"                                (default)\n");
-	fprintf(stderr, "    -6 --ipv6                   Interpret <address> as an IPv6 address.\n");
-	fprintf(stderr, "    -t --ttl <ttl>              Use <ttl> as IP(v6) TTL/Hop-Limit. (default: 64)\n");
-	fprintf(stderr, "    -s --message-size <size>    Use <size> as ICMP message data size.\n"
-					"                                (default: 56)\n");
-	fprintf(stderr, "    -i --interval <interval>    Use <interval> (may be decimal) as ping\n"
-					"                                interval in seconds. (default: 1.0)\n");
-	fprintf(stderr, "    -W --expiration <expire>    Use <expire> (may be decimal) as ping interval\n"
-					"                                in seconds. (default: 1.99)\n");
-	fprintf(stderr, "    -m --missed-max <missed>    Use <missed> as number of missed pongs\n"
-					"                                exceeding which triggers the <hook command>.\n"
-					"                                (default: 10)\n");
-	fprintf(stderr, "    -b --notify-block           Block until <hook command> exits. (default)\n");
-	fprintf(stderr, "    -B --no-notify-block        Don't block until <hook command> exits. May\n"
-					"                                result in multiple <hook command>s executing\n"
-					"                                simultaneously.\n");
+	printf("USAGE: %s [OPTIONS] <address> [<hook command>]\n", progname);
+	printf("\n");
+	printf("Send pings (echo requests) to <address>, excessive missed pongs (echo response)\n"
+		   "results in <hook command> being run, if it is set.\n");
+	printf("\n");
+	printf("OPTIONS:\n");
+	printf("    -h --help                   Print this message.\n");
+	printf("    -v --verbose                Be verbose (may be specified multiple times).\n");
+	printf("    -q --quiet                  Be less verbose (may be specified multiple times).\n");
+	printf("    -4 --ipv4                   Interpret <address> as an IPv4 address.\n"
+		   "                                (default)\n");
+	printf("    -6 --ipv6                   Interpret <address> as an IPv6 address.\n");
+	printf("    -t --ttl <ttl>              Use <ttl> as IP(v6) TTL/Hop-Limit. (default: 64)\n");
+	printf("    -s --message-size <size>    Use <size> as ICMP message data size.\n"
+		   "                                (default: 56)\n");
+	printf("    -i --interval <interval>    Use <interval> (may be decimal) as ping\n"
+		   "                                interval in seconds. (default: 1.0)\n");
+	printf("    -W --expiration <expire>    Use <expire> (may be decimal) as ping interval\n"
+		   "                                in seconds. (default: 1.99)\n");
+	printf("    -m --missed-max <missed>    Use <missed> as number of missed pongs\n"
+		   "                                exceeding which triggers the <hook command>.\n"
+		   "                                (default: 10)\n");
+	printf("    -b --notify-block           Block until <hook command> exits. (default)\n");
+	printf("    -B --no-notify-block        Don't block until <hook command> exits. May\n"
+		   "                                result in multiple <hook command>s executing\n"
+		   "                                simultaneously.\n");
 }
 
 static void monitor_ip_set_default_config (struct monitor_ip_config *cfg) {
@@ -141,7 +143,7 @@ static struct monitor_ip_config *monitor_ip_configure (
 	else
 		progname = "monitor-ip";
 
-	static const char *const shortopts = "hv46s:t:i:W:m:bB";
+	static const char *const shortopts = "hvq46s:t:i:W:m:bB";
 	static const struct option longopts[] = {
 		{ .name = "help",            .flag = NULL, .has_arg = no_argument,       .val = 'h' },
 		{ .name = "verbose",         .flag = NULL, .has_arg = no_argument,       .val = 'v' },
@@ -158,6 +160,7 @@ static struct monitor_ip_config *monitor_ip_configure (
 	};
 
 	sa_family_t af = AF_INET;
+	int logging_level = log_logging_level;
 	do {
 		int c = getopt_long(argc, argv, shortopts, longopts, NULL);
 		if (c == -1)
@@ -174,7 +177,12 @@ static struct monitor_ip_config *monitor_ip_configure (
 			monitor_ip_usage(progname);
 			exit(0);
 		case 'v':
-			// TODO
+			if (logging_level > LOG_LEVEL_MIN)
+				logging_level -= 1;
+			break;
+		case 'q':
+			if (logging_level < LOG_LEVEL_MAX_INC)
+				logging_level += 1;
 			break;
 		case '4':
 			af = AF_INET;
@@ -185,18 +193,12 @@ static struct monitor_ip_config *monitor_ip_configure (
 		case 't':
 			errno = 0;
 			ull_tmp = strtoull(optarg, &str_tmp, 10);
-			if (ull_tmp > UINT8_MAX || errno == ERANGE) {
-				fprintf(stderr, "Failed to parse TTL: %s\n", strerror(ERANGE));
-				exit(1);
-			}
-			if (errno) {
-				fprintf(stderr, "Failed to parse TTL: %s\n", strerror(errno));
-				exit(1);
-			}
-			if (*str_tmp != '\0') {
-				fprintf(stderr, "Failed to parse TTL: %s\n", "Trailing characters");
-				exit(1);
-			}
+			if (ull_tmp > UINT8_MAX && !errno)
+				errno = ERANGE;
+			if (errno)
+				fatalf("Failed to parse TTL: %s", strerror(errno));
+			if (*str_tmp != '\0')
+				fatalf("Failed to parse TTL: %s", "Trailing characters");
 
 			u8_tmp = ull_tmp;
 			cfg->ttl = u8_tmp;
@@ -204,18 +206,12 @@ static struct monitor_ip_config *monitor_ip_configure (
 		case 's':
 			errno = 0;
 			ull_tmp = strtoull(optarg, &str_tmp, 10);
-			if (ull_tmp > SIZE_MAX || errno == ERANGE) {
-				fprintf(stderr, "Failed to parse message size: %s\n", strerror(ERANGE));
-				exit(1);
-			}
-			if (errno) {
-				fprintf(stderr, "Failed to parse message size: %s\n", strerror(errno));
-				exit(1);
-			}
-			if (*str_tmp != '\0') {
-				fprintf(stderr, "Failed to parse message size: %s\n", "Trailing characters");
-				exit(1);
-			}
+			if (ull_tmp > SIZE_MAX && !errno)
+				errno = ERANGE;
+			if (errno)
+				fatalf("Failed to parse message size: %s", strerror(errno));
+			if (*str_tmp != '\0')
+				fatalf("Failed to parse message size: %s", "Trailing characters");
 
 			size_tmp = ull_tmp;
 			cfg->netio_params.msg_s = size_tmp;
@@ -223,18 +219,12 @@ static struct monitor_ip_config *monitor_ip_configure (
 		case 'i':
 			errno = 0;
 			d_tmp = strtod(optarg, &str_tmp);
-			if (d_tmp <= 0 || errno == ERANGE) {
-				fprintf(stderr, "Failed to parse interval: %s\n", strerror(ERANGE));
-				exit(1);
-			}
-			if (errno) {
-				fprintf(stderr, "Failed to parse interval: %s\n", strerror(errno));
-				exit(1);
-			}
-			if (*str_tmp != '\0') {
-				fprintf(stderr, "Failed to parse interval: %s\n", "Trailing characters");
-				exit(1);
-			}
+			if (d_tmp <= 0 && !errno)
+				errno = ERANGE;
+			if (errno)
+				fatalf("Failed to parse interval: %s", strerror(errno));
+			if (*str_tmp != '\0')
+				fatalf("Failed to parse interval: %s", "Trailing characters");
 
 			useconds2timespec((1000 * 1000) * d_tmp, &timespec_tmp);
 			cfg->time_ping_interval = timespec_tmp;
@@ -242,18 +232,12 @@ static struct monitor_ip_config *monitor_ip_configure (
 		case 'W':
 			errno = 0;
 			d_tmp = strtod(optarg, &str_tmp);
-			if (d_tmp <= 0 || errno == ERANGE) {
-				fprintf(stderr, "Failed to parse expire: %s\n", strerror(ERANGE));
-				exit(1);
-			}
-			if (errno) {
-				fprintf(stderr, "Failed to parse expire: %s\n", strerror(errno));
-				exit(1);
-			}
-			if (*str_tmp != '\0') {
-				fprintf(stderr, "Failed to parse expire: %s\n", "Trailing characters");
-				exit(1);
-			}
+			if (d_tmp <= 0 && !errno)
+				errno = ERANGE;
+			if (errno)
+				fatalf("Failed to parse expire: %s", strerror(errno));
+			if (*str_tmp != '\0')
+				fatalf("Failed to parse expire: %s", "Trailing characters");
 
 			useconds2timespec((1000 * 1000) * d_tmp, &timespec_tmp);
 			cfg->time_ping_expire = timespec_tmp;
@@ -261,14 +245,10 @@ static struct monitor_ip_config *monitor_ip_configure (
 		case 'm':
 			errno = 0;
 			ull_tmp = strtoull(optarg, &str_tmp, 10);
-			if (errno) {
-				fprintf(stderr, "Failed to parse max missed pongs: %s\n", strerror(errno));
-				exit(1);
-			}
-			if (*str_tmp != '\0') {
-				fprintf(stderr, "Failed to parse max missed pongs: %s\n", "Trailing characters");
-				exit(1);
-			}
+			if (errno)
+				fatalf("Failed to parse max missed pongs: %s", strerror(errno));
+			if (*str_tmp != '\0')
+				fatalf("Failed to parse max missed pongs: %s", "Trailing characters");
 
 			cfg->monitor_params.missed_max = ull_tmp;
 			break;
@@ -282,57 +262,67 @@ static struct monitor_ip_config *monitor_ip_configure (
 			exit(1);
 			break;
 		default:
-			fprintf(stderr, "Unknown argument?\n");
-			exit(1);
+			panics("getopt provided an unknown argument value?");
 		}
 	} while (1);
 
-	if (argc <= optind) {
-		fprintf(stderr, "No IP address specified!\n");
-		monitor_ip_usage(progname);
-		exit(1);
+	log_logging_level = logging_level;
+
+	if (argc <= optind)
+		fatalf("No IP address specified on the command line! See: %s -h", progname);
+
+	size_t ping_addr_impl_s, inx_addr_offset, port_offset;
+	// Get size of sockaddr implementation, and Compute offsets from (void *)0x0.
+	switch (af) {
+	case AF_INET:
+		ping_addr_impl_s = sizeof(struct sockaddr_in);
+		inx_addr_offset = (size_t)&((struct sockaddr_in *)0)->sin_addr;
+		port_offset = (size_t)&((struct sockaddr_in *)0)->sin_port;
+		break;
+	case AF_INET6:
+		ping_addr_impl_s = sizeof(struct sockaddr_in6);
+		inx_addr_offset = (size_t)&((struct sockaddr_in6 *)0)->sin6_addr;
+		port_offset = (size_t)&((struct sockaddr_in6 *)0)->sin6_port;
+		break;
+	default:
+		panicf("Unknown address family: %d?", (int)af);
 	}
 
+	// Is freed as part of cfg using monitor_ip_config_free.
+	struct sockaddr *ping_addr_impl = malloc(ping_addr_impl_s);
+	if (!ping_addr_impl)
+		panics("Failed to allocate ping socket address implementation!");
+
+	// Zero the address out since we can't gurentee setting the corresponding
+	// sin*_zero field.
+	bzero(ping_addr_impl, ping_addr_impl_s);
+
 	const char *ip_address_str = argv[optind];
-	if (AF_INET == af) {
-		struct sockaddr_in *ping_addr4 = malloc(sizeof(struct sockaddr_in));
-		int parse_result = inet_pton(AF_INET, ip_address_str, &ping_addr4->sin_addr);
-		if (1 == parse_result) {
-			ping_addr4->sin_family = AF_INET;
-			ping_addr4->sin_port = PING_PORT;
-			cfg->ping_addr = (struct sockaddr *)ping_addr4;
-		} else if (0 == parse_result) {
-			fprintf(stderr, "Invalid IPv4 address\n");
-			exit(1);
-		} else {
-			fprintf(stderr, "Failed to parse IPv4 address: %s\n", strerror(errno));
-			exit(1);
-		}
-	} else if (AF_INET6 == af) {
-		struct sockaddr_in6 *ping_addr6 = malloc(sizeof(struct sockaddr_in6));
-		int parse_result = inet_pton(
-				AF_INET6, ip_address_str, &ping_addr6->sin6_addr);
-		if (1 == parse_result) {
-			ping_addr6->sin6_family = AF_INET6;
-			ping_addr6->sin6_port = PING_PORT;
-			cfg->ping_addr = (struct sockaddr *)ping_addr6;
-		} else if (0 == parse_result) {
-			fprintf(stderr, "Invalid IPv6 address\n");
-			exit(1);
-		} else {
-			fprintf(stderr, "Failed to parse IPv6 address: %s\n", strerror(errno));
-			exit(1);
-		}
+	void *inx_addr_p = (char *)ping_addr_impl + inx_addr_offset;
+	int parse_result = inet_pton(af, ip_address_str, inx_addr_p);
+	if (0 == parse_result) {
+		fatals("Failed to parse: Invalid format");
+	} else if (0 > parse_result) {
+		fatalf("Failed to parse: %s", strerror(errno));
 	}
+
+	ping_addr_impl->sa_family = af;
+	in_port_t *port_p = (in_port_t *)((char *)ping_addr_impl + port_offset);
+	*port_p = PING_PORT;
+	cfg->ping_addr = ping_addr_impl;
 
 	if (argc > optind + 1) {
 		const char *monitor_notify_cmd = argv[optind + 1];
 		size_t monitor_notify_cmd_s = strlen(monitor_notify_cmd) + 1;
-		char *monitor_notify_cmd_permenant = malloc(monitor_notify_cmd_s);
-		memcpy(monitor_notify_cmd_permenant, monitor_notify_cmd, monitor_notify_cmd_s);
+		// Is freed as part of cfg using monitor_ip_config_free.
+		char *monitor_notify_cmd_perm = malloc(monitor_notify_cmd_s);
+		memcpy(monitor_notify_cmd_perm , monitor_notify_cmd, monitor_notify_cmd_s);
 
-		cfg->monitor_params.notify_command = monitor_notify_cmd_permenant;
+		cfg->monitor_params.notify_command = monitor_notify_cmd_perm;
 	}
+
+	if (argc > optind + 2)
+		fatals("Extra arguments detected!");
 
 	return cfg;
 }
@@ -354,14 +344,11 @@ static int monitor_ip_open_socket (sa_family_t af) {
 		ping_sockfd = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
 		break;
 	default:
-		fprintf(stderr, "Unknown address family: %d\n", (int)af);
-		exit(1);
+		panicf("Unknown address family: %d?", (int)af);
 	}
 
-	if (0 > ping_sockfd) {
-		fprintf(stderr, "Error creating socket: %s\n", strerror(errno));
-		exit(1);
-	}
+	if (0 > ping_sockfd)
+		fatalf("Error opening socket: %s", strerror(errno));
 
 	return ping_sockfd;
 }
@@ -375,23 +362,17 @@ static void monitor_ip_set_socket_options (struct monitor_ip_config *cfg, int pi
 	switch (af) {
 	case AF_INET:
 		sol = SOL_IP;
-		if (setsockopt(ping_sockfd, SOL_IP, IP_TTL, &ttl_val, sizeof(ttl_val)) != 0) {
-			fprintf(stderr, "Failed setting socket TTL: %s\n", strerror(errno));
-			exit(1);
-		}
 		break;
 	case AF_INET6:
 		sol = SOL_IPV6;
 		break;
 	default:
-		fprintf(stderr, "Unknown address family: %d\n", (int)af);
+		panicf("Unknown address family: %d?", (int)af);
 		exit(1);
 	}
 
-	if (setsockopt(ping_sockfd, sol, IP_TTL, &ttl_val, sizeof(ttl_val)) != 0) {
-		fprintf(stderr, "Failed setting socket TTL: %s\n", strerror(errno));
-		exit(1);
-	}
+	if (setsockopt(ping_sockfd, sol, IP_TTL, &ttl_val, sizeof(ttl_val)) != 0)
+		fatalf("Failed setting socket TTL: %s", strerror(errno));
 }
 
 static void monitor_ip_update_pongs (
@@ -401,11 +382,11 @@ static void monitor_ip_update_pongs (
 	for (size_t i = 0; pongs_s > i; ++i) {
 		struct netio_pong pong = pongs[i];
 
+		// TODO: don't add expired pings to the record at all!
 		struct ping_record_entry entry_data;
 		if (!ping_record_update_pong(ping_record, pong.seq, &entry_data)) {
-			fprintf(stderr,
-					"Pong for sequence %hu received, but not in sent record, possibly "
-					"expired or errant?\n", pong.seq);
+			warnf("Pong for sequence %hu received, but not in sent record, possibly "
+				  "expired or errant.", pong.seq);
 			continue;
 		}
 
@@ -415,9 +396,9 @@ static void monitor_ip_update_pongs (
 		const char *is_dup_str = (1 < entry_data.pong_cnt) ? " (dup)" : "";
 		const char *is_exp_str =
 			(1 > cmp_timespec(&ping_record->timeout, &time_rtt)) ? " (expired)" : "";
-		fprintf(stdout, "Pong for sequence %hu%s, rtt: %.02fms%s\n",
-			entry_data.sequence, is_dup_str, timespec2double(&time_rtt) * 1000.,
-			is_exp_str);
+		infof("pong: icmp_seq=%d%s time=%.03f ms%s",
+				entry_data.sequence, is_dup_str,
+				timespec2double(&time_rtt) * 1000., is_exp_str);
 	}
 }
 

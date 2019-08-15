@@ -18,6 +18,7 @@
 #include "checksum.h"
 #include "packet.h"
 #include "netio.h"
+#include "log.h"
 
 static struct ping_record_entry netio_send_v4 (
 		struct netio_params, int, const struct sockaddr_in, uint16_t);
@@ -74,14 +75,13 @@ size_t netio_receive (
 		if (first_select_iter)
 			first_select_iter = false;
 		else
-			fprintf(stdout,
-					"Continuing select loop, remaining time %.03fs\n",
+			tracef("Continuing select loop, remaining time %.03fs",
 					timespec2double(&timeout));
 
 		// If we know a datagram is already available, no need to select again.
 		if (!netio_select_noblock(ping_sockfd)) {
 			if (!netio_select_block(ping_sockfd, timeout)) {
-				fprintf(stdout, "No more pongs available within timeframe.\n");
+				tracef("No more pongs available within timeframe.");
 				break;
 			}
 
@@ -103,6 +103,11 @@ size_t netio_receive (
 		// Receive the next packet.
 		size_t recv_bytes = netio_recvfrom(
 				ping_sockfd, pkt, pkt_s, pong_addr_s, pong_addr);
+		if (!recv_bytes) {
+			// This shouldn't happen, we should never receive a zero-length packet.
+			errorf("Error receiving ICMP packet: %s", "Zero length payload");
+			continue;
+		}
 
 		// Get the payload address.
 		void *pkt_payload;
@@ -112,7 +117,7 @@ size_t netio_receive (
 
 		// Should only be NULL if get_ip4_payload fails to parse the IPv4 header.
 		if (pkt_payload == NULL) {
-			fprintf(stderr, "Received invalid IP(v6) packet!\n");
+			warns("Received invalid IP(v6) packet!");
 			continue;
 		}
 
@@ -121,8 +126,7 @@ size_t netio_receive (
 
 		// Should really never happen, the socket is set for just ICMP(v6).
 		if (pkt_protocol_expected != pkt_protocol) {
-			fprintf(stdout,
-					"Recieved IP packet, not ICMP(v6): protocol %hhu, payload_length %zu.\n",
+			warnf("Recieved IP packet, not ICMP(v6): protocol %hhu, payload_length %zu.",
 					pkt_protocol, pkt_payload_len);
 			continue;
 		}
@@ -131,23 +135,21 @@ size_t netio_receive (
 		struct icmphdr icmphdr_compat;
 		if (!netio_get_icmp_compat(
 					pong_addr->sa_family, pkt_payload_len, pkt_payload, &icmphdr_compat)) {
-			fprintf(stderr, "Recieved truncated ICMP packet.\n");
+			warns("Recieved truncated ICMP packet.");
 			continue;
 		}
 
 		// This will happen all the time, especially for v6.
 		// TODO: check for related ICMP messages (unreach, ttl exceeded, etc.).
 		if (icmphdr_compat.type != netio_echo_reply_icmp_type(pong_addr->sa_family)) {
-			fprintf(stdout,
-					"Recieved ICMP(v6) packet, not echo reply: type %hhu, code %hhu.\n",
+			debugf("Recieved ICMP(v6) packet, not echo reply: type %hhu, code %hhu.",
 					icmphdr_compat.type, icmphdr_compat.code);
 			continue;
 		}
 
 		// Only consider ICMP echo-reply packets with a matching ID.
 		if (ntohs(icmphdr_compat.icmp_echo_id) != params->id) {
-			fprintf(stdout,
-					"Recieved echo reply packet, wrong id: id %hu.\n",
+			debugf("Recieved echo reply packet, wrong id: id %hu.",
 					ntohs(icmphdr_compat.icmp_echo_id));
 			continue;
 		}
@@ -155,8 +157,11 @@ size_t netio_receive (
 		// TODO: check source IP matches.
 
 		// Print the recieved packet.
-		fprintf(stdout, "Recieved packet:\n");
-		print_icmphdr(pong_addr, recv_bytes, icmphdr_compat);
+		char *icmphdr_info_str = asprint_icmphdr(
+				pong_addr, recv_bytes, icmphdr_compat);
+		debugf("Recieved packet:\n"
+			   "%s", icmphdr_info_str);
+		free(icmphdr_info_str);
 
 		// Save the pong received.
 		struct netio_pong netio_pong = {
@@ -198,17 +203,18 @@ static struct ping_record_entry netio_send_v4 (
 	ssize_t bytes_sent = sendto(
 			ping_sockfd, icmp_pkt, sizeof(icmp_pkt), 0, &ping_addr,
 			sizeof(struct sockaddr_in));
-	if (bytes_sent < 0) {
-		fprintf(stderr, "Error sending packet: %s\n", strerror(errno));
-		exit(1);
-	}
+	if (bytes_sent < 0)
+		fatalf("Error sending packet: %s", strerror(errno));
 
 	// Immediately after send.
 	struct timespec time_sent;
 	clock_gettime(CLOCK_MONOTONIC, &time_sent);
 
-	fprintf(stdout, "Sent packet:\n");
-	print_icmphdr((const struct sockaddr *)&ping_addr, sizeof(icmp_pkt), *icmphdr);
+	char *icmphdr_info_str = asprint_icmphdr(
+			(const struct sockaddr *)&ping_addr, sizeof(icmp_pkt), *icmphdr);
+	debugf("Sent packet:\n"
+		   "%s", icmphdr_info_str);
+	free(icmphdr_info_str);
 
 	return (struct ping_record_entry){
 		.sequence = sequence,
@@ -237,15 +243,12 @@ static struct ping_record_entry netio_send_v6 (
 			ping_sockfd, icmp6_pkt, icmp6_pkt_s, 0, &ping_addr,
 			sizeof(struct sockaddr_in6));
 	if (bytes_sent < 0) {
-		fprintf(stderr, "Error sending packet: %s\n", strerror(errno));
-		exit(1);
+		fatalf("Error sending packet: %s", strerror(errno));
 	}
 
 	// Immediately after send.
 	struct timespec time_sent;
 	clock_gettime(CLOCK_MONOTONIC, &time_sent);
-
-	fprintf(stdout, "Sent packet:\n");
 
 	struct icmphdr icmphdr_compat;
 
@@ -256,7 +259,11 @@ static struct ping_record_entry netio_send_v6 (
 	icmphdr_compat.icmp_echo_id = icmp6_hdr->icmp6_id;
 	icmphdr_compat.icmp_echo_seq = icmp6_hdr->icmp6_seq;
 
-	print_icmphdr((const struct sockaddr *)&ping_addr, icmp6_pkt_s, icmphdr_compat);
+	char *icmphdr_info_str = asprint_icmphdr(
+			(const struct sockaddr *)&ping_addr, icmp6_pkt_s, icmphdr_compat);
+	debugf("Sent packet:\n"
+		   "%s", icmphdr_info_str);
+	free(icmphdr_info_str);
 
 	return (struct ping_record_entry){
 		.sequence = sequence,
@@ -277,10 +284,8 @@ static bool netio_select_noblock (int ping_sockfd) {
 	};
 
 	int select_avail = select(FD_SETSIZE, &read_fds, NULL, NULL, &timeout_val);
-	if (0 > select_avail) {
-		fprintf(stderr, "Error polling ICMP socket: %s\n", strerror(errno));
-		exit(1);
-	}
+	if (0 > select_avail)
+		fatalf("Error polling ICMP socket: %s", strerror(errno));
 
 	if (FD_ISSET(ping_sockfd, &read_fds)) {
 		return true;
@@ -299,10 +304,8 @@ static bool netio_select_block (int ping_sockfd, struct timespec timeout) {
 
 	// Block until packet is available or timeout reached.
 	int select_avail = select(FD_SETSIZE, &read_fds, NULL, NULL, &timeout_val);
-	if (0 > select_avail) {
-		fprintf(stderr, "Error polling ICMP socket: %s\n", strerror(errno));
-		exit(1);
-	}
+	if (0 > select_avail)
+		fatalf("Error polling ICMP socket: %s", strerror(errno));
 
 	// Check if a packet was available within the timeout.
 	if (FD_ISSET(ping_sockfd, &read_fds)) {
@@ -318,13 +321,8 @@ static size_t netio_recvfrom (
 ) {
 	ssize_t recv_bytes = recvfrom(
 			fd, pkt, pkt_s, 0, addr_out, &addr_s);
-	if (0 == recv_bytes) {
-		// This shouldn't happen, we should never receive a zero-length packet.
-		fprintf(stderr, "Error receiving ICMP packet: %s\n", "Unknown");
-		exit(1);
-	} else if (0 > recv_bytes) {
-		fprintf(stderr, "Error receiving ICMP packet: %s\n", strerror(errno));
-		exit(1);
+	if (0 > recv_bytes) {
+		fatalf("Error receiving ICMP packet: %s", strerror(errno));
 	}
 
 	return (size_t)recv_bytes;

@@ -1,5 +1,7 @@
 // packet.c
 
+#include "features.h"
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -9,10 +11,13 @@
 #include <alloca.h>
 #include <stdio.h>
 #include <strings.h>
+#include <stdlib.h>
 
 #include "packet.h"
+#include "log.h"
 
-void print_icmphdr (
+// MUST FREE return
+char *asprint_icmphdr (
 		const struct sockaddr *addr, ssize_t length, struct icmphdr hdr
 ) {
 	const void *addr_data;
@@ -35,16 +40,36 @@ void print_icmphdr (
 
 	inet_ntop(addr->sa_family, addr_data, addr_str, addr_str_s);
 
-	fprintf(stdout, "\tAddress: %s\n", addr_str);
-	fprintf(stdout, "\tLength: %zd\n", length);
-	fprintf(stdout, "\t%s Type: %hhu\n", icmp_version, (unsigned char)hdr.type);
-	fprintf(stdout, "\t%s Code: %hhu\n", icmp_version, (unsigned char)hdr.code);
+	// MUST FREE icmphdr_checksum_info_str
+	char *icmphdr_checksum_info_str = NULL;
 	if (addr->sa_family == AF_INET) // The kernel handles ICMPv6 checksuming.
-		fprintf(stdout,
-				"\tChecksum: %hu (BE)\n", (unsigned short)ntohs(hdr.checksum));
-	fprintf(stdout, "\tID: %hu\n", (unsigned short)ntohs(hdr.icmp_echo_id));
-	fprintf(stdout,
-			"\tSequence Number: %hu\n", (unsigned short)ntohs(hdr.icmp_echo_seq));
+		if (0 > asprintf(&icmphdr_checksum_info_str,
+				"\tChecksum: %hu (BE)\n", (unsigned short)ntohs(hdr.checksum)))
+			panics("Failed to allocate ICMP header checksum info string");
+
+	char *icmphdr_info_str;
+	int written_bytes = asprintf(&icmphdr_info_str,
+			"\tAddress: %s\n" // addr_str
+			"\tLength: %zd\n" // length
+			"\t%s Type: %hhu\n" // icmp_version, hdr.type
+			"\t%s Code: %hhu\n" // icmp_version, hdr.code
+			"%s" // icmphdr_checksum_info_str
+			"\tID: %hu\n" // hdr.icmp_echo_id
+			"\tSequence Number: %hu", // hdr.icmp_echo_seq
+			addr_str,
+			length,
+			icmp_version, (unsigned char)hdr.type,
+			icmp_version, (unsigned char)hdr.code,
+			icmphdr_checksum_info_str ? icmphdr_checksum_info_str : "",
+			(unsigned short)ntohs(hdr.icmp_echo_id),
+			(unsigned short)ntohs(hdr.icmp_echo_seq)
+	);
+	if (0 > written_bytes)
+		panics("Failed to allocate ICMP header connection info string.");
+
+	free(icmphdr_checksum_info_str);
+
+	return icmphdr_info_str;
 }
 
 void *get_ip4_payload (

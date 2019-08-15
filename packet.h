@@ -16,6 +16,6 @@ struct ip4_pkt {
 	char options_and_data[0];
 } __attribute__((packed));
 
-void print_icmphdr (const struct sockaddr *, ssize_t, struct icmphdr);
+char *asprint_icmphdr (const struct sockaddr *, ssize_t, struct icmphdr);
 void *get_ip4_payload (void *, size_t, uint8_t *, size_t *);
 void packet_icmp6hdr_compat (const struct icmp6_hdr *, struct icmphdr *);

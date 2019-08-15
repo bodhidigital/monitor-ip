@@ -12,6 +12,7 @@
 
 #include "timeutil.h"
 #include "record.h"
+#include "log.h"
 
 static void ping_record_destroy_notify (gpointer data);
 static gint ping_record_compare_to_sequence (gconstpointer, gconstpointer);
@@ -75,14 +76,12 @@ void ping_record_collect_expired (struct ping_record *ping_record, struct timesp
 		if (-1 < cmp_timespec(t, &time_expiration)) {
 			if (!entry_data->pong_cnt) {
 				ping_record->missed_cnt += 1;
-				fprintf(stdout,
-						"No pong received after %.03fs for ping with sequence number %hu.\n",
+				infof("No pong received after %.03fs for ping with sequence number %hu.",
 						timespec2double(&ping_record->timeout), entry_data->sequence);
-				fprintf(stdout,
-						"Consecuritve missed pings %llu.\n", ping_record->missed_cnt);
+				infof("Consecuritve missed pings: %llu", ping_record->missed_cnt);
 			} else {
 				ping_record->missed_cnt = 0;
-				fprintf(stdout, "Reset missed pings.\n");
+				debugs("Reset missed pings.");
 			}
 
 			ping_record->l = g_list_remove_link(ping_record->l, node);
