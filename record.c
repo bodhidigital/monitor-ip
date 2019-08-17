@@ -44,17 +44,16 @@ void ping_record_clear (struct ping_record *ping_record) {
 void ping_record_submit (
 		struct ping_record *ping_record, struct ping_record_entry *ping_record_entry
 ) {
-	struct ping_record_entry *entry_data = malloc(sizeof(struct ping_record_entry));
+	struct ping_record_entry *entry_data = malloc(
+			sizeof(struct ping_record_entry));
 	assert(entry_data);
 	*entry_data = *ping_record_entry;
 
 	ping_record->l = g_list_append(ping_record->l, entry_data);
 }
 
-// Returns current number of received pings, or 0 if no matching pong exists.
-bool ping_record_update_pong (
-		struct ping_record *ping_record, uint16_t sequence,
-		struct ping_record_entry *entry_data_out
+struct ping_record_entry *ping_record_get_entry (
+		struct ping_record *ping_record, uint16_t sequence
 ) {
 	GList *matching_entry_node = g_list_find_custom(
 			ping_record->l, &sequence, ping_record_compare_to_sequence);
@@ -62,15 +61,17 @@ bool ping_record_update_pong (
 		return false;
 
 	struct ping_record_entry *entry_data = matching_entry_node->data;
-	entry_data->pong_cnt += 1;
+	if (sequence != entry_data->sequence)
+		panicf("Searched for ping entry with sequence %hu, but returned sequence "
+			   "(%hu) doesn't match?", sequence, entry_data->sequence);
 
-	assert(sequence == entry_data->sequence);
-	*entry_data_out = *entry_data;
-	return true;
+	return entry_data;
 }
 
 // Time t should be created *before* the last receive_pong call.
-void ping_record_collect_expired (struct ping_record *ping_record, struct timespec *t) {
+void ping_record_collect_expired (
+		struct ping_record *ping_record, struct timespec *t
+) {
 	// Must get address of next node before freeing it at the end of the loop.
 	GList *next_node;
 	for (GList *node = ping_record->l; node != NULL; node = next_node) {

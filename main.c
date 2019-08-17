@@ -395,22 +395,36 @@ static void monitor_ip_update_pongs (
 		struct netio_pong pong = pongs[i];
 
 		// TODO: don't add expired pings to the record at all!
-		struct ping_record_entry entry_data;
-		if (!ping_record_update_pong(ping_record, pong.seq, &entry_data)) {
+		struct ping_record_entry *entry_data = ping_record_get_entry(
+				ping_record, pong.seq);
+		if (!entry_data) {
 			warnf("Pong for sequence %hu received, but not in sent record, possibly "
 				  "expired or errant.", pong.seq);
 			continue;
 		}
 
 		struct timespec time_rtt;
-		timespec_diff(&entry_data.time_sent, &pong.time_recv, &time_rtt);
+		timespec_diff(&entry_data->time_sent, &pong.time_recv, &time_rtt);
 
-		const char *is_dup_str = (1 < entry_data.pong_cnt) ? " (dup)" : "";
-		const char *is_exp_str =
-			(1 > cmp_timespec(&ping_record->timeout, &time_rtt)) ? " (expired)" : "";
+		const char *is_exp_str = "";
+		if (1 > cmp_timespec(&ping_record->timeout, &time_rtt)) {
+			warnf("Pong for sequence %hu received after expiration time "
+				  "(%.03f ms >= %.03f ms).", entry_data->sequence,
+					1000. * timespec2double(&time_rtt),
+					1000. * timespec2double(&ping_record->timeout));
+			is_exp_str = " (expired)";
+		} else {
+			// Only imcrement pong count if not expired.
+			entry_data->pong_cnt += 1;
+		}
+
+		const char *is_dup_str = "";
+		if (1 < entry_data->pong_cnt)
+			is_dup_str = " (dup)";
+
 		infof("pong: icmp_seq=%d%s time=%.03f ms%s",
-				entry_data.sequence, is_dup_str,
-				timespec2double(&time_rtt) * 1000., is_exp_str);
+				entry_data->sequence, is_dup_str,
+				1000. * timespec2double(&time_rtt), is_exp_str);
 	}
 }
 

@@ -24,6 +24,6 @@ struct ping_record *ping_record_init (struct timespec *);
 void ping_record_free (struct ping_record *);
 void ping_record_clear (struct ping_record *);
 void ping_record_submit (struct ping_record *, struct ping_record_entry *);
-bool ping_record_update_pong (
-		struct ping_record *, uint16_t, struct ping_record_entry *);
+struct ping_record_entry *ping_record_get_entry (
+		struct ping_record *, uint16_t);
 void ping_record_collect_expired (struct ping_record *, struct timespec *);
