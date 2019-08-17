@@ -2,6 +2,7 @@
 
 #include "features.h"
 
+#include <sys/socket.h>
 #include <stdbool.h>
 
 struct monitor_params {
@@ -10,4 +11,6 @@ struct monitor_params {
 	const char *notify_command;
 };
 
-void test_monitor_notify_trigger (struct monitor_params *, unsigned long long);
+bool monitor_notify_test (struct monitor_params *, unsigned long long);
+int monitor_notify_trigger (
+		struct monitor_params *, unsigned long long, const struct sockaddr *);

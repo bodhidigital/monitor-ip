@@ -31,8 +31,14 @@ struct ping_record *ping_record_init (struct timespec *timeout) {
 }
 
 void ping_record_free (struct ping_record *ping_record) {
-	g_list_free_full(ping_record->l, ping_record_destroy_notify);
+	ping_record_clear(ping_record);
 	free(ping_record);
+}
+
+// Remove all pending pings in the record.
+void ping_record_clear (struct ping_record *ping_record) {
+	g_list_free_full(ping_record->l, ping_record_destroy_notify);
+	ping_record->l = NULL;
 }
 
 void ping_record_submit (

@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <strings.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #include "packet.h"
 #include "log.h"
@@ -20,25 +21,21 @@
 char *asprint_icmphdr (
 		const struct sockaddr *addr, ssize_t length, struct icmphdr hdr
 ) {
-	const void *addr_data;
-	size_t addr_str_s;
 	const char *icmp_version;
-	if (addr->sa_family == AF_INET) {
-		// four octets as three decimal digits, three dots, null byte.
-		addr_str_s = 4 * 3 + 3 + 1;  // 16
-		addr_data = &((struct sockaddr_in *)addr)->sin_addr;
+	switch (addr->sa_family) {
+	case AF_INET:
 		icmp_version = "ICMP";
-	} else {
-		// eight octet-pairs as four hexadecimal digits, seven colons, null byte.
-		addr_str_s = 8 * 4 + 7 + 1;  // 40
-		addr_data = &((struct sockaddr_in6 *)addr)->sin6_addr;
+		break;
+	case AF_INET6:
 		icmp_version = "ICMPv6";
+		break;
+	default:
+		panicf("Unknown address family: %d?", (int)addr->sa_family);
 	}
 
-	char *addr_str;
-	addr_str = (char *)alloca(addr_str_s);
-
-	inet_ntop(addr->sa_family, addr_data, addr_str, addr_str_s);
+	char *addr_str = packet_format_address(addr);
+	if (!addr_str)
+		fatalf("Failed to format socket address: %s", strerror(errno));
 
 	// MUST FREE icmphdr_checksum_info_str
 	char *icmphdr_checksum_info_str = NULL;

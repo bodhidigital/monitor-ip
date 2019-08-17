@@ -25,6 +25,7 @@
 struct monitor_ip_config {
 	const struct sockaddr *ping_addr;
 	uint8_t ttl;
+	bool reset_after_monitor_notify;
 	struct netio_params netio_params;
 	struct monitor_params monitor_params;
 	struct timespec time_ping_interval;
@@ -102,6 +103,8 @@ static void monitor_ip_usage (const char *progname) {
 	printf("    -B --no-notify-block        Don't block until <hook command> exits. May\n"
 		   "                                result in multiple <hook command>s executing\n"
 		   "                                simultaneously.\n");
+	printf("    -r --reset                  Reset missed ping count after successful run of\n"
+		   "                                notify command.  Only valid with --notify-block.\n");
 }
 
 static void monitor_ip_set_default_config (struct monitor_ip_config *cfg) {
@@ -109,6 +112,7 @@ static void monitor_ip_set_default_config (struct monitor_ip_config *cfg) {
 	*cfg = (struct monitor_ip_config){
 		.ping_addr = NULL,
 		.ttl = 64,
+		.reset_after_monitor_notify = false,
 		.monitor_params = (struct monitor_params){
 			.block = true,
 			.missed_max = 10,
@@ -143,7 +147,7 @@ static struct monitor_ip_config *monitor_ip_configure (
 	else
 		progname = "monitor-ip";
 
-	static const char *const shortopts = "hvq46s:t:i:W:m:bB";
+	static const char *const shortopts = "hvq46s:t:i:W:m:bBr";
 	static const struct option longopts[] = {
 		{ .name = "help",            .flag = NULL, .has_arg = no_argument,       .val = 'h' },
 		{ .name = "verbose",         .flag = NULL, .has_arg = no_argument,       .val = 'v' },
@@ -156,6 +160,7 @@ static struct monitor_ip_config *monitor_ip_configure (
 		{ .name = "missed-max",      .flag = NULL, .has_arg = required_argument, .val = 'm' },
 		{ .name = "notify-block",    .flag = NULL, .has_arg = no_argument,       .val = 'b' },
 		{ .name = "no-notify-block", .flag = NULL, .has_arg = no_argument,       .val = 'B' },
+		{ .name = "reset",           .flag = NULL, .has_arg = no_argument,       .val = 'r' },
 		{ .name = NULL,              .flag = NULL, .has_arg = no_argument,       .val = 0 }
 	};
 
@@ -258,6 +263,9 @@ static struct monitor_ip_config *monitor_ip_configure (
 		case 'B':
 			cfg->monitor_params.block = false;
 			break;
+		case 'r':
+			cfg->reset_after_monitor_notify = true;
+			break;
 		case '?':
 			exit(1);
 			break;
@@ -265,6 +273,10 @@ static struct monitor_ip_config *monitor_ip_configure (
 			panics("getopt provided an unknown argument value?");
 		}
 	} while (1);
+
+	if (cfg->reset_after_monitor_notify && !cfg->monitor_params.block)
+		fatalf("--reset specified, but monitor notify command is not configured to "
+			   "block! See: %s -h", progname);
 
 	log_logging_level = logging_level;
 
@@ -438,6 +450,19 @@ static void monitor_ip_loop_iter (
 
 	ping_record_collect_expired(ping_record, &time_since_last_receive);
 
-	test_monitor_notify_trigger(
-			&cfg->monitor_params, ping_record->missed_cnt);
+	if (monitor_notify_test(&cfg->monitor_params, ping_record->missed_cnt)) {
+		int notify_ret = monitor_notify_trigger(
+				&cfg->monitor_params, ping_record->missed_cnt, cfg->ping_addr);
+		if (0 > notify_ret) {
+			errorf("Failed to trigger monitor notify: %s", strerror(errno));
+		} else if (0 == notify_ret && cfg->reset_after_monitor_notify) {
+			ping_record->missed_cnt = 0;
+		}
+
+		if (cfg->monitor_params.block) {
+			// May have blocked for arbitrary amount of time, some pings may seem expired
+			// even though they are not.
+			ping_record_clear(ping_record);
+		}
+	}
 }
