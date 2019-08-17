@@ -1,11 +1,11 @@
 # Makefile
 
 LDFLAGS := \
-	-lglib-2.0 \
+	$(shell pkgconf --libs glib-2.0) \
 	$(LDFLAGS)
 CFLAGS := \
 	-std=c99 \
-	-I/usr/include/ -I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include \
+	$(shell pkgconf --cflags glib-2.0) \
 	-Wall -Wextra -Werror -Wno-long-long -Wno-variadic-macros \
 	$(CFLAGS)
 
