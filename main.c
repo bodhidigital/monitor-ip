@@ -77,10 +77,10 @@ static uint16_t monitor_ip_get_ping_id () {
 }
 
 static void monitor_ip_usage (const char *progname) {
-	printf("USAGE: %s [OPTIONS] <address> [<hook command>]\n", progname);
+	printf("USAGE: %s [OPTIONS] <address> [<hook command> [<arg> [...]]\n", progname);
 	printf("\n");
 	printf("Send pings (echo requests) to <address>, excessive missed pongs (echo response)\n"
-		   "results in <hook command> being run, if it is set.\n");
+		   "results in <hook command> being run with provided arguments, if it is set.\n");
 	printf("\n");
 	printf("OPTIONS:\n");
 	printf("    -h --help                   Print this message.\n");
@@ -116,7 +116,8 @@ static void monitor_ip_set_default_config (struct monitor_ip_config *cfg) {
 		.monitor_params = (struct monitor_params){
 			.block = true,
 			.missed_max = 10,
-			.notify_command = NULL
+			.notify_command = NULL,
+			.notify_command_arguments = NULL
 		},
 		.netio_params = (struct netio_params){
 			.id = monitor_ip_get_ping_id(),
@@ -309,7 +310,7 @@ static struct monitor_ip_config *monitor_ip_configure (
 	// sin*_zero field.
 	bzero(ping_addr_impl, ping_addr_impl_s);
 
-	const char *ip_address_str = argv[optind];
+	const char *ip_address_str = argv[optind++];
 	void *inx_addr_p = (char *)ping_addr_impl + inx_addr_offset;
 	int parse_result = inet_pton(af, ip_address_str, inx_addr_p);
 	if (0 == parse_result) {
@@ -323,14 +324,38 @@ static struct monitor_ip_config *monitor_ip_configure (
 	*port_p = PING_PORT;
 	cfg->ping_addr = ping_addr_impl;
 
-	if (argc > optind + 1) {
-		const char *monitor_notify_cmd = argv[optind + 1];
+	if (argc > optind) {
+		const char *monitor_notify_cmd = argv[optind++];
 		size_t monitor_notify_cmd_s = strlen(monitor_notify_cmd) + 1;
 		// Is freed as part of cfg using monitor_ip_config_free.
 		char *monitor_notify_cmd_perm = malloc(monitor_notify_cmd_s);
-		memcpy(monitor_notify_cmd_perm , monitor_notify_cmd, monitor_notify_cmd_s);
+		if (!monitor_notify_cmd_perm)
+			panics("Failed to allocate monitor notify command string.");
+
+		memcpy(monitor_notify_cmd_perm, monitor_notify_cmd, monitor_notify_cmd_s);
+
+		size_t monitor_notify_cmd_args_s = argc - optind + 2;
+		char **monitor_notify_cmd_args = malloc(
+				sizeof(char *) * monitor_notify_cmd_args_s);
+		if (!monitor_notify_cmd_args)
+			panics("Failed to allocate monitor notify command arguments array.");
+
+		monitor_notify_cmd_args[0] = monitor_notify_cmd_perm;
+		for (size_t i = 1; monitor_notify_cmd_args_s - 1 > i; ++i) {
+			const char *arg = argv[optind++];
+			size_t arg_s = strlen(arg) + 1;
+			char *arg_perm = malloc(arg_s);
+			if (!arg_perm)
+				panicf("Failed to allocate monitor notify command argument (%zu), %s.",
+						i, arg_perm);
+
+			memcpy(arg_perm, arg, arg_s);
+			monitor_notify_cmd_args[i] = arg_perm;
+		}
+		monitor_notify_cmd_args[monitor_notify_cmd_args_s - 1] = NULL;
 
 		cfg->monitor_params.notify_command = monitor_notify_cmd_perm;
+		cfg->monitor_params.notify_command_arguments = monitor_notify_cmd_args;
 	}
 
 	if (argc > optind + 2)

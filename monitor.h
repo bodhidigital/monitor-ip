@@ -9,6 +9,7 @@ struct monitor_params {
 	unsigned long long missed_max;
 	bool block;
 	const char *notify_command;
+	char *const *notify_command_arguments;
 };
 
 bool monitor_notify_test (struct monitor_params *, unsigned long long);

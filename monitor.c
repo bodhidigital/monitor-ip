@@ -20,8 +20,10 @@
 
 static void monitor_notify_exec (
 		struct monitor_params, unsigned long long, const struct sockaddr *);
-static void monitor_notify_exec_set_env (unsigned long long, const struct sockaddr *);
+static void monitor_notify_exec_set_env (
+		unsigned long long, const struct sockaddr *);
 static int monitor_notify_proccess_child_status (int);
+static char *monitor_format_notify_command (struct monitor_params);
 
 // Returns true if monitor_notify_trigger must be run.
 bool monitor_notify_test (
@@ -40,7 +42,6 @@ int monitor_notify_trigger (
 		struct monitor_params *params, unsigned long long missed_cnt,
 		const struct sockaddr *addr
 ) {
-
 	errorf("Missed pings (%llu) exceeds limit of %llu.",
 			missed_cnt, params->missed_max);
 
@@ -49,8 +50,9 @@ int monitor_notify_trigger (
 		return 0;
 	}
 
-	infof("Running notify command: %s",
-			params->notify_command);
+	char *notify_command_str = monitor_format_notify_command(*params);
+	infof("Running notify command: %s", notify_command_str);
+	free(notify_command_str);
 
 	pid_t fork_pid = fork();
 	if (0 == fork_pid) { // Child:
@@ -85,7 +87,7 @@ static void monitor_notify_exec (
 
 	monitor_notify_exec_set_env(missed_cnt, addr);
 
-	execlp(params.notify_command, params.notify_command, NULL);
+	execvp(params.notify_command, params.notify_command_arguments);
 	errorf("Could not executing notify command: %s", strerror(errno));
 	exit(127);
 }
@@ -140,4 +142,34 @@ static int monitor_notify_proccess_child_status (int child_status) {
 			return exit_status;
 		}
 	}
+}
+
+static char *monitor_format_notify_command (struct monitor_params params) {
+	char *notify_command_str = NULL;
+	size_t notify_command_str_s = 0;
+	for (size_t i = 0; params.notify_command_arguments[i]; ++i) {
+		char *arg = params.notify_command_arguments[i];
+		size_t arg_s = strlen(arg) + 1;
+
+		bool write_space = false;
+		if (notify_command_str_s != 0) {
+			notify_command_str_s += 1;
+			write_space = true;
+		}
+		notify_command_str_s += arg_s;
+
+		char *new_notify_command_str = realloc(
+				notify_command_str, notify_command_str_s);
+		if (!new_notify_command_str)
+			panics("Failed to allocate or extend notify command string.");
+
+		notify_command_str = new_notify_command_str;
+
+		if (write_space)
+			strcat(notify_command_str, " ");
+
+		strcat(notify_command_str, arg);
+	}
+
+	return notify_command_str;
 }
