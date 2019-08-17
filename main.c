@@ -94,8 +94,8 @@ static void monitor_ip_usage (const char *progname) {
 		   "                                (default: 56)\n");
 	printf("    -i --interval <interval>    Use <interval> (may be decimal) as ping\n"
 		   "                                interval in seconds. (default: 1.0)\n");
-	printf("    -W --expiration <expire>    Use <expire> (may be decimal) as ping interval\n"
-		   "                                in seconds. (default: 1.99)\n");
+	printf("    -W --expiration <expire>    Use <expire> (may be decimal) as ping expiration\n"
+		   "                                time in seconds. (default: 1.99)\n");
 	printf("    -m --missed-max <missed>    Use <missed> as number of missed pongs\n"
 		   "                                exceeding which triggers the <hook command>.\n"
 		   "                                (default: 10)\n");
@@ -104,7 +104,7 @@ static void monitor_ip_usage (const char *progname) {
 		   "                                result in multiple <hook command>s executing\n"
 		   "                                simultaneously.\n");
 	printf("    -r --reset                  Reset missed ping count after successful run of\n"
-		   "                                notify command.  Only valid with --notify-block.\n");
+		   "                                notify command. Only valid with --notify-block.\n");
 }
 
 static void monitor_ip_set_default_config (struct monitor_ip_config *cfg) {
