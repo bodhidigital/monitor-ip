@@ -1,6 +1,9 @@
 <!-- README.md -->
 
-# monitor-ip: robust, efficient, hook-driven internet and remote IP monitoring using ICMP echo-request/reply.
+# monitor-ip
+
+<blockquote>Robust, efficient, hook-driven internet and remote IP monitoring
+using ICMP echo-request/reply.</blockquote>
 
 ## Description:
 
